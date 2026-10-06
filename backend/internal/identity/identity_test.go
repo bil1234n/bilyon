@@ -483,3 +483,46 @@ func TestSubjects(t *testing.T) {
 		}
 	}
 }
+
+func TestPayee(t *testing.T) {
+	f := newFixture(t, 2)
+	if _, _, err := f.svc.ClaimHandle(ctx(t), f.users[0], "milo"); err != nil {
+		t.Fatal(err)
+	}
+	subject, err := f.svc.Subject(ctx(t), f.users[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := f.svc.Payee(ctx(t), subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.UserID != f.users[0] || p.Status != "active" || p.Entry.Subject != subject || p.Entry.Version != 1 ||
+		p.Entry.Handle != "milo" {
+		t.Fatalf("payee %+v", p)
+	}
+	if _, err := f.svc.UpdateProfile(ctx(t), f.users[0], identity.Profile{Name: "Milo", Currencies: []string{"EUR"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx(t), `UPDATE users SET status = 'frozen' WHERE user_id = $1`, f.users[0]); err != nil {
+		t.Fatal(err)
+	}
+	if p, err = f.svc.Payee(ctx(t), subject); err != nil || p.Entry.Version != 2 || p.Status != "frozen" ||
+		p.Entry.Currencies[0] != "EUR" {
+		t.Fatalf("updated payee %+v %v", p, err)
+	}
+	// A subject without an entry has no PAR, so it cannot be a payee.
+	bare, err := f.svc.Subject(ctx(t), f.users[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.Payee(ctx(t), bare); !errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("subject without an entry: %v", err)
+	}
+	if _, err := f.svc.Payee(ctx(t), "bil_0000000000000000000Z"); !errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("unknown subject: %v", err)
+	}
+	if _, err := f.svc.Payee(ctx(t), "alice"); !errors.Is(err, identity.ErrRequest) {
+		t.Fatalf("malformed subject: %v", err)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/bil1234n/bilyon/backend/internal/attest/androidkey"
@@ -1095,5 +1096,73 @@ func TestConcurrentRebind(t *testing.T) {
 	}
 	if ev := f.events(devicebind.TopicKeyRevoked); len(ev) != n {
 		t.Fatalf("%d superseded events, want %d", len(ev), n)
+	}
+}
+
+func TestLockActiveKey(t *testing.T) {
+	f := newFixture(t, nil)
+	dev := f.google.NewDevice(false)
+	_, b, err := f.bindAndroid(dev, uuid.Nil, devicebind.RoleDevice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, gest, err := f.bindAndroid(dev, b.Device.ID, devicebind.RoleGesture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := func(id uuid.UUID) (devicebind.Key, error) {
+		var k devicebind.Key
+		err := pgx.BeginFunc(ctx(t), f.pool, func(tx pgx.Tx) error {
+			var err error
+			k, err = devicebind.LockActiveKey(ctx(t), tx, id)
+			return err
+		})
+		return k, err
+	}
+	k, err := lock(gest.Key.ID)
+	if err != nil || k.ID != gest.Key.ID || k.DeviceID != b.Device.ID || k.Role != devicebind.RoleGesture ||
+		!slices.Equal(k.PublicKey, gest.Key.PublicKey) {
+		t.Fatalf("locked %+v %v", k, err)
+	}
+	if _, err := lock(uuid.New()); !errors.Is(err, devicebind.ErrNotFound) {
+		t.Fatalf("unknown key: %v", err)
+	}
+	// The lock holds off device revocation until the holder commits.
+	tx, err := f.pool.Begin(ctx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := devicebind.LockActiveKey(ctx(t), tx, b.Key.ID); err != nil {
+		t.Fatal(err)
+	}
+	revoked := make(chan error, 1)
+	go func() { revoked <- f.svc.Revoke(context.Background(), f.user, b.Device.ID, "lost") }()
+	select {
+	case err := <-revoked:
+		t.Fatalf("revocation did not wait for the lock: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-revoked; err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uuid.UUID{b.Key.ID, gest.Key.ID} {
+		if _, err := lock(id); !errors.Is(err, devicebind.ErrRevoked) {
+			t.Fatalf("key of a revoked device: %v", err)
+		}
+	}
+	// A revoked key on an active device.
+	dev2 := f.google.NewDevice(true)
+	_, b2, err := f.bindAndroid(dev2, uuid.Nil, devicebind.RoleDevice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.RevokeKey(ctx(t), f.user, b2.Key.ID, "biometry_changed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lock(b2.Key.ID); !errors.Is(err, devicebind.ErrRevoked) {
+		t.Fatalf("revoked key: %v", err)
 	}
 }

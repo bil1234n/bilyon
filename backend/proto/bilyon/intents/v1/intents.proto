@@ -1,0 +1,134 @@
+// Payment intent API (RFC 0001 §1.5, §2.2.5, §4.4.5). The realtime gateway
+// calls it for the THROW, CATCH and delivery receipts of the people it
+// authenticated (access token and DPoP proof in HELLO) and names them in
+// `actor`; only workloads trusted under the mTLS ACL may call it. The
+// gateway's REST API serves the same operations to apps directly.
+//
+// Conventions:
+//   - Ids are canonical UUID strings; amounts are int64 minor units.
+//   - CreateIntent is idempotent per intent id: the same TxAuth bytes return
+//     the intent (and finish any pending ledger step). Catch, Cancel and
+//     MarkDelivered are idempotent too.
+//   - Failures carry a google.rpc.ErrorInfo with domain "intents.bilyon" and
+//     a reason (TXAUTH, NONCE, STALE, MISMATCH, CONFLICT, NOT_FOUND,
+//     FORBIDDEN, STATE, INVALID, UNAVAILABLE). STATE errors carry the
+//     intent's state in metadata["state"].
+syntax = "proto3";
+
+package bilyon.intents.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/bil1234n/bilyon/backend/gen/bilyon/intents/v1;intentsv1";
+
+service IntentService {
+  // A batch of server nonces for the actor's device (TxAuth key 6).
+  rpc IssueNonces(IssueNoncesRequest) returns (IssueNoncesResponse);
+  // THROW, or a payment to a handle or a code.
+  rpc CreateIntent(CreateIntentRequest) returns (Intent);
+  rpc GetIntent(IntentRef) returns (Intent);
+  rpc ListIntents(ListIntentsRequest) returns (ListIntentsResponse);
+  // INCOMING reached the payee's device.
+  rpc MarkDelivered(IntentRef) returns (Intent);
+  // CATCH: accept (or claim) or decline; grab a drop.
+  rpc Catch(CatchRequest) returns (Intent);
+  // The payer takes back an intent nobody caught.
+  rpc Cancel(IntentRef) returns (Intent);
+}
+
+// Actor is the authenticated person a request is made for.
+message Actor {
+  string user_id = 1;
+  string device_id = 2;  // the device the request came from; required for IssueNonces
+}
+
+message IssueNoncesRequest {
+  Actor actor = 1;
+  int32 count = 2;  // 1..16
+}
+
+message Nonce {
+  bytes value = 1;  // 16 bytes
+  google.protobuf.Timestamp expires_at = 2;  // sign before this
+}
+
+message IssueNoncesResponse {
+  repeated Nonce nonces = 1;
+}
+
+// The flick's flight as the thrower measured it (§4.4.3).
+message Trajectory {
+  double azimuth = 1;   // radians, thrower's world frame
+  double speed = 2;     // peak speed, m/s
+  double distance = 3;  // UWB distance, m
+}
+
+message CreateIntentRequest {
+  Actor actor = 1;       // the payer, or the payee relaying a peer-to-peer THROW
+  bytes txauth = 2;      // COSE_Sign1 (§2.2.5)
+  string gesture = 3;    // flick, split, grab, handle, qr
+  string payee_subject = 4;  // empty for a drop
+  int64 amount = 5;      // the signed fields, repeated: they must match byte for byte
+  string currency = 6;
+  string quote_id = 7;   // empty without FX
+  int64 t_land_ms = 8;   // flicks: landing time, Unix ms in server time
+  Trajectory trajectory = 9;  // flicks, optional
+  string on_timeout = 10;     // async, void, or empty for the payer's default
+}
+
+message IntentRef {
+  Actor actor = 1;
+  string intent_id = 2;
+}
+
+message CatchRequest {
+  Actor actor = 1;
+  string intent_id = 2;
+  bool accept = 3;
+  // Set by the realtime gateway when the actor's device is in a mutual
+  // proximity session with the payer's and made the pull-back gesture.
+  bool proximity = 4;
+}
+
+message ListIntentsRequest {
+  Actor actor = 1;
+  string role = 2;              // payer, payee, or empty for both
+  repeated string states = 3;   // empty: every state
+  string before = 4;            // cursor: the last intent id of the previous page
+  int32 limit = 5;              // 1..200, default 50
+}
+
+message ListIntentsResponse {
+  repeated Intent intents = 1;
+}
+
+message Intent {
+  string id = 1;
+  // created, held, delivered, caught, settled, async_pending, voiding,
+  // voided, aborted
+  string state = 2;
+  string reason = 3;
+  string gesture = 4;
+  string payer_id = 5;
+  string payer_subject = 6;
+  string payer_device_id = 7;
+  string payee_id = 8;
+  string payee_subject = 9;
+  uint64 par_version = 10;
+  int64 amount = 11;
+  string currency = 12;
+  int64 payee_amount = 13;
+  string payee_currency = 14;
+  string quote_id = 15;
+  string on_timeout = 16;
+  string hold_id = 17;
+  repeated string entry_ids = 18;
+  google.protobuf.Timestamp signed_at = 19;
+  google.protobuf.Timestamp t_land = 20;
+  google.protobuf.Timestamp live_until = 21;
+  google.protobuf.Timestamp claim_until = 22;
+  Trajectory trajectory = 23;
+  google.protobuf.Timestamp created_at = 24;
+  google.protobuf.Timestamp updated_at = 25;
+  google.protobuf.Timestamp resolved_at = 26;
+}

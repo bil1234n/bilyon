@@ -437,6 +437,37 @@ func (s *Service) PublishTreeHead(ctx context.Context) (tlog.SignedTreeHead, err
 	return s.log.Publish(ctx, s.cfg.Signer, s.cfg.KeyID, s.cfg.Now())
 }
 
+// Payee is the account holder behind a subject and their current entry.
+type Payee struct {
+	UserID uuid.UUID
+	Status string // the user's status: active, frozen or closed
+	Entry  *Entry
+}
+
+// Payee resolves a subject for a payment: its owner and current directory
+// entry. A subject without an entry has no PAR, so nobody can have
+// verified it as a payee: ErrNotFound.
+func (s *Service) Payee(ctx context.Context, subject string) (Payee, error) {
+	if !ValidSubject(subject) {
+		return Payee{}, fmt.Errorf("%w: subject %q", ErrRequest, subject)
+	}
+	var p Payee
+	var raw []byte
+	err := s.pool.QueryRow(ctx, `SELECT s.user_id, u.status, d.entry FROM subjects s
+		JOIN users u ON u.user_id = s.user_id JOIN directory_entries d ON d.subject = s.subject
+		WHERE s.subject = $1`, subject).Scan(&p.UserID, &p.Status, &raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Payee{}, ErrNotFound
+	}
+	if err != nil {
+		return Payee{}, err
+	}
+	if p.Entry, err = DecodeEntry(raw); err != nil {
+		return Payee{}, err
+	}
+	return p, nil
+}
+
 // CurrentVersion is the subject's current entry version: payments re-check
 // it at execution and refuse a payee that changed (PAYEE_CHANGED).
 func (s *Service) CurrentVersion(ctx context.Context, subject string) (uint64, error) {

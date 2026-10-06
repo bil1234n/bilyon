@@ -123,6 +123,13 @@ CREATED ──risk ok + hold──▶ HELD ──INCOMING delivered──▶ DEL
 ABORTED (no hold)        ASYNC_PENDING (claimable 7 d) ──expiry / decline──▶ VOIDED (hold voided, boomerang)
 ```
 
+`CAUGHT` (settlement decided, post pending) and an internal `VOIDING` (return decided, hold release pending)
+are durable, so after a crash the orchestrator finishes the ledger call with the same idempotency key.
+Payments that are not throws (to a handle or a code, a split share) settle as soon as their hold is placed.
+A **drop** has nobody to claim it, and a cross-currency throw cannot keep its rate lock for 7 days. Both
+return when the live TTL ends, whatever the payer's preference. A cross-currency throw is accepted only if
+its quote outlives the catch window.
+
 **Client UI state machine:** `AIMING → LOCKED → THROWN (local) → IN_FLIGHT (ack or P2P echo) → LANDED →
 CAUGHT → SETTLED`, or `→ BOOMERANG` on `ABORTED` / `VOIDED`.
 

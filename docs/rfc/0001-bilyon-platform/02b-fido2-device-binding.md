@@ -141,9 +141,19 @@ by `K_dev` (or `K_gest` within the gesture limit):
 
 ```cddl
 txauth = { 1 => 1, 2 => id16 (intent_id), 3 => minor (amount), 4 => currency,
-           5 => h32 (payee_ref = H(payee account id)), 6 => id16 (server nonce), 7 => epoch,
-           ? 8 => tstr (fx quote id), ? 9 => uint (gesture kind: 1 flick, 2 split, 3 grab) }
+           5 => h32 (payee_ref = H("bilyon/payee/v1", subject)), 6 => id16 (server nonce), 7 => epoch,
+           ? 8 => tstr (fx quote id), ? 9 => uint (gesture kind: 1 flick, 2 split, 3 grab),
+           ? 10 => uint (par_version: the payee entry version the payer verified, §4.1.4) }
 ```
+
+The COSE `kid` is the 16-byte id under which the signing key was bound. The server nonce comes from a
+batch the device fetches when throw mode opens. It is a 48-bit issue time in milliseconds, 16 random bits
+and a 64-bit HMAC over both and the device id, so the server verifies it statelessly. Each nonce authorises
+one intent and is valid for 10 minutes. A TxAuth must reach the server within 60 s of its signing time
+(`7`); after that the payer re-signs. A relayed THROW therefore cannot execute a payment the payer
+already gave up on. A **drop** (§3.B.5) has no payee when it is signed. Its `payee_ref` is
+`H("bilyon/drop/v1", intent_id)`, so the signature explicitly says "whoever grabs it", and no subject's
+reference can collide with it.
 
 The server checks that amount, currency, payee and quote are **byte-identical** to the intent it holds
 (PSD2 RTS Art. 5: the authentication code is specific to amount and payee). The biometric prompt shows

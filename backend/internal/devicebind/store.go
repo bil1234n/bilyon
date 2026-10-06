@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -234,6 +235,33 @@ func (s *store) activeKey(ctx context.Context, keyID uuid.UUID) (Key, error) {
 		return Key{}, ErrRevoked
 	}
 	return k, nil
+}
+
+// LockActiveKey loads an active key in the caller's transaction, share-locks
+// it and locks its device row. Writes that follow serialise with key and
+// device revocation, and with each other per device: the intent
+// orchestrator counts K_gest velocity under this lock.
+func LockActiveKey(ctx context.Context, tx pgx.Tx, keyID uuid.UUID) (Key, error) {
+	var deviceRevoked bool
+	k, err := scanKey(tx.QueryRow(ctx, `SELECT `+prefixed("k.", keyColumns)+`, d.revoked_at IS NOT NULL
+		FROM device_keys k JOIN devices d ON d.device_id = k.device_id
+		WHERE k.key_id = $1 FOR NO KEY UPDATE OF d FOR SHARE OF k`, keyID), &deviceRevoked)
+	if err != nil {
+		return Key{}, err
+	}
+	if k.RevokedAt != nil || deviceRevoked {
+		return Key{}, ErrRevoked
+	}
+	return k, nil
+}
+
+// prefixed qualifies a comma-separated column list with a table alias.
+func prefixed(alias, cols string) string {
+	parts := strings.Split(cols, ",")
+	for i, c := range parts {
+		parts[i] = alias + strings.TrimSpace(c)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func emit(ctx context.Context, tx pgx.Tx, topic string, userID uuid.UUID, data map[string]any) error {
