@@ -161,6 +161,9 @@ func claimKey(ctx context.Context, tx pgx.Tx, scope, key string, hash [32]byte) 
 
 // mapError turns database errors that escaped the pre-checks into ledger errors.
 func mapError(err error) error {
+	if err == nil {
+		return nil
+	}
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

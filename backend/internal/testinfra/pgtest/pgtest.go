@@ -316,6 +316,30 @@ func (s *Server) Database(t testing.TB) *pgxpool.Pool {
 	return pool
 }
 
+// EmptyDatabase returns the URL of a fresh database with no schema (for
+// testing migrations themselves). It is dropped when the test ends.
+func (s *Server) EmptyDatabase(t testing.TB) string {
+	t.Helper()
+	if s == nil {
+		if os.Getenv("BILYON_REQUIRE_INFRA") == "1" {
+			t.Fatal(ErrUnavailable)
+		}
+		t.Skip(ErrUnavailable.Error())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	name := "bilyon_empty_" + randomSuffix()
+	if err := s.adminExec(ctx, fmt.Sprintf("CREATE DATABASE %s", pgx.Identifier{name}.Sanitize())); err != nil {
+		t.Fatalf("pgtest: create database: %v", err)
+	}
+	t.Cleanup(func() {
+		dropCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = s.adminExec(dropCtx, fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", pgx.Identifier{name}.Sanitize()))
+	})
+	return s.dbURL(name)
+}
+
 // URL returns the connection URL of a database created by Database's pool.
 func URL(pool *pgxpool.Pool) string { return pool.Config().ConnString() }
 

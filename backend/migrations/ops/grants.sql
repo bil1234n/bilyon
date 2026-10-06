@@ -35,4 +35,7 @@ GRANT UPDATE (updated_at) ON account_balances TO bilyon_app;
 -- Retention jobs.
 GRANT DELETE ON idempotency_keys, outbox TO bilyon_app;
 
+-- Table-reading outbox consumers (the TigerBeetle shadow) keep their position.
+GRANT INSERT, UPDATE, DELETE ON outbox_cursors TO bilyon_app;
+
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO bilyon_app;

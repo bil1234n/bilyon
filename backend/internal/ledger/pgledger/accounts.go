@@ -121,3 +121,15 @@ func (e *Engine) Balance(ctx context.Context, id uuid.UUID) (ledger.Balance, err
 	b.Available = b.Posted - b.Pending
 	return b, nil
 }
+
+// ListAccounts returns up to limit accounts with ids greater than after, in
+// id order (keyset pagination for reconciliation and exports).
+func (e *Engine) ListAccounts(ctx context.Context, after uuid.UUID, limit int) ([]ledger.Account, error) {
+	return ListAccountsIn(ctx, e.pool, after, limit)
+}
+
+// Balances returns the balances of several accounts in one query. Unknown
+// ids are absent from the result.
+func (e *Engine) Balances(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]ledger.Balance, error) {
+	return BalancesIn(ctx, e.pool, ids)
+}

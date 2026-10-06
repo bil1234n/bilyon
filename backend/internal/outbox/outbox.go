@@ -88,8 +88,14 @@ func Write(ctx context.Context, tx pgx.Tx, ev Event) (Envelope, error) {
 	if headers == nil {
 		headers = map[string]string{}
 	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO outbox (topic, msg_key, partition, payload, headers) VALUES ($1, $2, $3, $4, $5)`,
+	// The subquery (an optimisation fence) assigns the transaction id before
+	// the identity default draws the row id: a transaction holding an outbox
+	// id is then always in flight in concurrent snapshots, which table
+	// tailers rely on to resolve gaps (migration 0002).
+	if _, err := tx.Exec(ctx, `INSERT INTO outbox (topic, msg_key, partition, payload, headers, txid)
+		SELECT v.topic, v.msg_key, v.partition, v.payload, v.headers, v.txid
+		  FROM (SELECT $1::text AS topic, $2::text AS msg_key, $3::smallint AS partition, $4::jsonb AS payload,
+		               $5::jsonb AS headers, pg_current_xact_id() AS txid OFFSET 0) v`,
 		ev.Topic, ev.Key, Partition(ev.Key), payload, headers); err != nil {
 		return Envelope{}, fmt.Errorf("outbox: insert %s: %w", ev.Topic, err)
 	}
