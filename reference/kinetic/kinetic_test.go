@@ -87,6 +87,9 @@ func TestFlickDetectedWithDirectionAndSpeed(t *testing.T) {
 	if ev.TEnd-ev.TOnset < 0.15 || ev.TEnd-ev.TOnset > 0.3 {
 		t.Errorf("gesture duration %.3f s", ev.TEnd-ev.TOnset)
 	}
+	t.Logf("azimuth error %.2f deg, peak speed %.3f m/s, sigma %.1f deg, duration %.0f ms, decided %.0f ms after peak",
+		wrap(ev.Azimuth-deg(30))*180/math.Pi, ev.PeakVelocity.Horizontal().Norm(), ev.SigmaAz*180/math.Pi,
+		(ev.TEnd-ev.TOnset)*1000, (ev.TEnd-ev.TPeak)*1000)
 }
 
 func TestFlickDirectionSurvivesWristRotation(t *testing.T) {

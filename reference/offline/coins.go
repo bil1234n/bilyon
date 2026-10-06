@@ -9,10 +9,10 @@ import (
 
 // Tier S: value is carried by single-use hardware keys ("coins"). Each coin
 // key is generated with KeyMint USAGE_COUNT_LIMIT=1; the server accepts it
-// only if the key attestation lists that limit as TEE/StrongBox-enforced. The
-// allowance certifies all coins at once through a Merkle root, so a payee can
-// verify any coin with a log2(N)-hash proof and spending a coin twice
-// requires extracting a key from the TEE.
+// only if the key attestation lists that limit and rollback resistance as
+// TEE/StrongBox-enforced. The allowance certifies all coins at once through a
+// Merkle root, so a payee can verify any coin with a log2(N)-hash proof, and
+// spending a coin twice requires extracting a key from the TEE.
 
 // MaxCoins bounds the coins per allowance (tree depth 6).
 const MaxCoins = 64
