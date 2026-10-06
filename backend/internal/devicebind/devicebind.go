@@ -253,8 +253,10 @@ func (s *Service) Begin(ctx context.Context, userID, deviceID uuid.UUID, purpose
 	return Challenge{FlowID: id, Challenge: f.Challenge, Expires: f.Expires}, nil
 }
 
-// take consumes a flow and checks its purpose and lifetime.
-func (s *Service) take(ctx context.Context, flowID string, purpose Purpose) (flow, error) {
+// take consumes a flow and checks its purpose, its lifetime and that the
+// authenticated caller is the user who began it: a leaked flow id cannot
+// bind a key to someone else's account.
+func (s *Service) take(ctx context.Context, userID uuid.UUID, flowID string, purpose Purpose) (flow, error) {
 	f, err := s.flows.Take(ctx, flowID)
 	if errors.Is(err, onetime.ErrNotFound) {
 		return flow{}, ErrFlow
@@ -262,7 +264,7 @@ func (s *Service) take(ctx context.Context, flowID string, purpose Purpose) (flo
 	if err != nil {
 		return flow{}, err
 	}
-	if f.Purpose != purpose || !s.cfg.Now().Before(f.Expires) {
+	if f.Purpose != purpose || !s.cfg.Now().Before(f.Expires) || f.UserID != userID {
 		return flow{}, ErrFlow
 	}
 	return f, nil
@@ -323,8 +325,8 @@ type IOSBinding struct {
 }
 
 // FinishIOS verifies an iOS binding and stores the key.
-func (s *Service) FinishIOS(ctx context.Context, flowID string, b IOSBinding) (Binding, error) {
-	f, err := s.take(ctx, flowID, PurposeBind)
+func (s *Service) FinishIOS(ctx context.Context, userID uuid.UUID, flowID string, b IOSBinding) (Binding, error) {
+	f, err := s.take(ctx, userID, flowID, PurposeBind)
 	if err != nil {
 		return Binding{}, err
 	}
@@ -399,8 +401,8 @@ type AndroidBinding struct {
 }
 
 // FinishAndroid verifies an Android binding and stores the key.
-func (s *Service) FinishAndroid(ctx context.Context, flowID string, b AndroidBinding) (Binding, error) {
-	f, err := s.take(ctx, flowID, PurposeBind)
+func (s *Service) FinishAndroid(ctx context.Context, userID uuid.UUID, flowID string, b AndroidBinding) (Binding, error) {
+	f, err := s.take(ctx, userID, flowID, PurposeBind)
 	if err != nil {
 		return Binding{}, err
 	}
@@ -508,8 +510,8 @@ type CoinKey struct {
 // hardware-enforced usage count limit of 1 and rollback resistance, on
 // Android 12 or later, and the device has strong integrity. The caller
 // builds the allowance's coin Merkle tree from the returned keys, in order.
-func (s *Service) AttestCoins(ctx context.Context, flowID string, m CoinMinting) ([]CoinKey, error) {
-	f, err := s.take(ctx, flowID, PurposeCoins)
+func (s *Service) AttestCoins(ctx context.Context, userID uuid.UUID, flowID string, m CoinMinting) ([]CoinKey, error) {
+	f, err := s.take(ctx, userID, flowID, PurposeCoins)
 	if err != nil {
 		return nil, err
 	}
@@ -570,8 +572,8 @@ type IntegrityProof struct {
 
 // RefreshIntegrity verifies fresh integrity evidence (offline allowances
 // require evidence under 24 h old, §3.A.3) and returns the updated device.
-func (s *Service) RefreshIntegrity(ctx context.Context, flowID string, p IntegrityProof) (Device, error) {
-	f, err := s.take(ctx, flowID, PurposeIntegrity)
+func (s *Service) RefreshIntegrity(ctx context.Context, userID uuid.UUID, flowID string, p IntegrityProof) (Device, error) {
+	f, err := s.take(ctx, userID, flowID, PurposeIntegrity)
 	if err != nil {
 		return Device{}, err
 	}

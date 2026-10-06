@@ -237,22 +237,26 @@ func (s *store) activeKey(ctx context.Context, keyID uuid.UUID) (Key, error) {
 	return k, nil
 }
 
-// LockActiveKey loads an active key in the caller's transaction, share-locks
-// it and locks its device row. Writes that follow serialise with key and
-// device revocation, and with each other per device: the intent
-// orchestrator counts K_gest velocity under this lock.
-func LockActiveKey(ctx context.Context, tx pgx.Tx, keyID uuid.UUID) (Key, error) {
+// LockActiveKey loads an active key and its device in the caller's
+// transaction, share-locks the key and locks the device row. Writes that
+// follow serialise with key and device revocation, and with each other per
+// device: the intent orchestrator counts K_gest velocity under this lock.
+func LockActiveKey(ctx context.Context, tx pgx.Tx, keyID uuid.UUID) (Key, Device, error) {
 	var deviceRevoked bool
 	k, err := scanKey(tx.QueryRow(ctx, `SELECT `+prefixed("k.", keyColumns)+`, d.revoked_at IS NOT NULL
 		FROM device_keys k JOIN devices d ON d.device_id = k.device_id
 		WHERE k.key_id = $1 FOR NO KEY UPDATE OF d FOR SHARE OF k`, keyID), &deviceRevoked)
 	if err != nil {
-		return Key{}, err
+		return Key{}, Device{}, err
 	}
 	if k.RevokedAt != nil || deviceRevoked {
-		return Key{}, ErrRevoked
+		return Key{}, Device{}, ErrRevoked
 	}
-	return k, nil
+	d, err := scanDevice(tx.QueryRow(ctx, `SELECT `+deviceColumns+` FROM devices WHERE device_id = $1`, k.DeviceID))
+	if err != nil {
+		return Key{}, Device{}, err
+	}
+	return k, d, nil
 }
 
 // prefixed qualifies a comma-separated column list with a table alias.

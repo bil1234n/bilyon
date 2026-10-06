@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/bil1234n/bilyon/backend/internal/accounts"
 	"github.com/bil1234n/bilyon/backend/internal/cose"
@@ -75,7 +76,10 @@ type Env struct {
 	Accounts *accounts.Resolver
 	Intents  *intents.Service
 	Config   intents.Config
-	google   *devicesim.Google
+	Google   *devicesim.Google // the Android trust root the binder accepts
+	Redis    *redis.Client
+	DirKey   *cose.KeySigner // K_dir
+	DirKeyID []byte
 	nostro   map[string]uuid.UUID
 }
 
@@ -92,7 +96,7 @@ func ctx(t testing.TB) context.Context {
 func New(t testing.TB, srv *pgtest.Server, edit func(*intents.Config)) *Env {
 	t.Helper()
 	e := &Env{T: t, Clock: &Clock{}, Pool: srv.Database(t), nostro: map[string]uuid.UUID{},
-		google: devicesim.NewGoogle(t)}
+		Google: devicesim.NewGoogle(t), Redis: redistest.Start(t), DirKeyID: []byte("dir1")}
 	e.Ledger = pgledger.New(srv.DatabaseWith(t, "ledger", ledgerdb.Setup))
 	for _, cur := range []string{"EUR", "USD"} {
 		a, err := e.Ledger.CreateAccount(ctx(t), ledger.CreateAccount{IdempotencyKey: "nostro:" + cur, Kind: ledger.KindNostro,
@@ -104,19 +108,18 @@ func New(t testing.TB, srv *pgtest.Server, edit func(*intents.Config)) *Env {
 	}
 	var err error
 	if e.Binder, err = devicebind.New(devicebind.Config{
-		Android: devicebind.AndroidConfig{PackageName: e.google.PackageName,
-			SigningCertDigests: [][]byte{e.google.SigningCert}, Roots: e.google.CA.Pool()},
-		Integrity: &devicebind.IntegrityConfig{DecryptionKey: e.google.DecryptionKey,
-			VerificationKey: &e.google.VerificationKey.PublicKey},
+		Android: devicebind.AndroidConfig{PackageName: e.Google.PackageName,
+			SigningCertDigests: [][]byte{e.Google.SigningCert}, Roots: e.Google.CA.Pool()},
+		Integrity: &devicebind.IntegrityConfig{DecryptionKey: e.Google.DecryptionKey,
+			VerificationKey: &e.Google.VerificationKey.PublicKey},
 		Now: e.Clock.Now,
-	}, redistest.Start(t), e.Pool); err != nil {
+	}, e.Redis, e.Pool); err != nil {
 		t.Fatal(err)
 	}
-	dirKey, err := cose.GenerateKeySigner()
-	if err != nil {
+	if e.DirKey, err = cose.GenerateKeySigner(); err != nil {
 		t.Fatal(err)
 	}
-	if e.Dir, err = identity.New(identity.Config{Signer: dirKey, KeyID: []byte("dir1"), Now: e.Clock.Now}, e.Pool); err != nil {
+	if e.Dir, err = identity.New(identity.Config{Signer: e.DirKey, KeyID: e.DirKeyID, Now: e.Clock.Now}, e.Pool); err != nil {
 		t.Fatal(err)
 	}
 	e.Accounts = accounts.New(e.Pool, e.Ledger)
@@ -146,7 +149,7 @@ func (e *Env) Person(handle string, phone bool) *Person {
 		t.Fatal(err)
 	}
 	if phone {
-		p.phone = e.google.NewDevice(false)
+		p.phone = e.Google.NewDevice(false)
 		var b devicebind.Binding
 		p.Dev, b = e.bind(p, uuid.Nil, devicebind.RoleDevice)
 		p.Device, p.DevKey = b.Device.ID, b.Key.ID
@@ -164,7 +167,7 @@ func (e *Env) bind(p *Person, device uuid.UUID, role string) (*ecdsa.PrivateKey,
 		t.Fatal(err)
 	}
 	key, chain := p.phone.GenerateKey(role, ch.Challenge, devicesim.KeyOptions{})
-	b, err := e.Binder.FinishAndroid(ctx(t), ch.FlowID, devicebind.AndroidBinding{Role: role, Chain: chain,
+	b, err := e.Binder.FinishAndroid(ctx(t), p.User, ch.FlowID, devicebind.AndroidBinding{Role: role, Chain: chain,
 		IntegrityToken: p.phone.IntegrityToken(ch.Challenge, devicesim.Point(t, key), nil)})
 	if err != nil {
 		t.Fatal(err)

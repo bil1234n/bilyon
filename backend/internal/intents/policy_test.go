@@ -7,9 +7,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/bil1234n/bilyon/backend/internal/devicebind"
 	"github.com/bil1234n/bilyon/backend/internal/fx"
 	"github.com/bil1234n/bilyon/backend/internal/identity"
 	"github.com/bil1234n/bilyon/backend/internal/ledger"
+	"github.com/bil1234n/bilyon/backend/internal/testinfra/devicesim"
 )
 
 // aborted creates th and expects a durable abort with reason and no hold.
@@ -405,4 +407,21 @@ func TestFXRequoteAtTheCatch(t *testing.T) {
 	wantState(t, out, StateVoided, ReasonFXRequote)
 	f.wantBalance(f.payer, "EUR", 1_000_00, 1_000_00)
 	f.wantBalance(f.payee, "USD", 0, 0)
+}
+
+func TestStaleDeviceIntegrityAborts(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.IntegrityMaxAge = time.Hour })
+	f.c.advance(2 * time.Hour)
+	f.aborted(f.flick(10_00), ReasonIntegrityStale)
+	// A fresh Play Integrity verdict restores payments from the device.
+	ch, err := f.binder.Begin(ctx(t), f.payer.user, f.payer.device, devicebind.PurposeIntegrity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := func(v *devicesim.Verdict) { v.Timestamp = f.c.now() }
+	if _, err := f.binder.RefreshIntegrity(ctx(t), f.payer.user, ch.FlowID, devicebind.IntegrityProof{
+		IntegrityToken: f.payer.phone.IntegrityToken(ch.Challenge, devicesim.Point(t, f.payer.dev), fresh)}); err != nil {
+		t.Fatal(err)
+	}
+	wantState(t, f.create(f.flick(10_00)), StateHeld, "")
 }

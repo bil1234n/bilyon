@@ -284,7 +284,7 @@ func TestIOSDeviceKeysAuthorise(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := binder.FinishIOS(ctx(t), ch.FlowID, devicebind.IOSBinding{Role: devicebind.RoleDevice,
+	b, err := binder.FinishIOS(ctx(t), f.stranger.user, ch.FlowID, devicebind.IOSBinding{Role: devicebind.RoleDevice,
 		PublicKey: devicesim.Point(t, key), AppAttestKeyID: phone.KeyID,
 		Attestation: phone.BindAttestation(ch.Challenge, key, devicesim.AttestOptions{})})
 	if err != nil {

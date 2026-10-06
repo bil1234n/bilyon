@@ -110,7 +110,7 @@ func (f *fixture) begin(user, device uuid.UUID, p devicebind.Purpose) devicebind
 func (f *fixture) registerIOS(dev *devicesim.IOSDevice, key *ecdsa.PrivateKey) (devicebind.Binding, error) {
 	f.t.Helper()
 	ch := f.begin(f.user, uuid.Nil, devicebind.PurposeBind)
-	return f.svc.FinishIOS(ctx(f.t), ch.FlowID, devicebind.IOSBinding{Role: devicebind.RoleDevice,
+	return f.svc.FinishIOS(ctx(f.t), f.user, ch.FlowID, devicebind.IOSBinding{Role: devicebind.RoleDevice,
 		PublicKey: devicesim.Point(f.t, key), AppAttestKeyID: dev.KeyID,
 		Attestation: dev.BindAttestation(ch.Challenge, key, devicesim.AttestOptions{})})
 }
@@ -119,7 +119,7 @@ func (f *fixture) registerIOS(dev *devicesim.IOSDevice, key *ecdsa.PrivateKey) (
 func (f *fixture) bindIOS(dev *devicesim.IOSDevice, deviceID uuid.UUID, role string, key *ecdsa.PrivateKey) (devicebind.Binding, error) {
 	f.t.Helper()
 	ch := f.begin(f.user, deviceID, devicebind.PurposeBind)
-	return f.svc.FinishIOS(ctx(f.t), ch.FlowID, devicebind.IOSBinding{Role: role,
+	return f.svc.FinishIOS(ctx(f.t), f.user, ch.FlowID, devicebind.IOSBinding{Role: role,
 		PublicKey: devicesim.Point(f.t, key), Assertion: dev.BindAssertion(ch.Challenge, key, devicesim.AssertOptions{})})
 }
 
@@ -129,7 +129,7 @@ func (f *fixture) bindAndroid(dev *devicesim.AndroidDevice, deviceID uuid.UUID, 
 	f.t.Helper()
 	ch := f.begin(f.user, deviceID, devicebind.PurposeBind)
 	key, chain := dev.GenerateKey(role, ch.Challenge, devicesim.KeyOptions{})
-	b, err := f.svc.FinishAndroid(ctx(f.t), ch.FlowID, devicebind.AndroidBinding{Role: role, Chain: chain,
+	b, err := f.svc.FinishAndroid(ctx(f.t), f.user, ch.FlowID, devicebind.AndroidBinding{Role: role, Chain: chain,
 		IntegrityToken: dev.IntegrityToken(ch.Challenge, devicesim.Point(f.t, key), nil)})
 	return key, b, err
 }
@@ -303,7 +303,7 @@ func TestIOSLifecycle(t *testing.T) {
 	// Integrity refresh: an assertion over the refresh challenge; the
 	// attestation's facts survive the merge.
 	ch := f.begin(f.user, d.ID, devicebind.PurposeIntegrity)
-	refreshed, err := f.svc.RefreshIntegrity(ctx(t), ch.FlowID, devicebind.IntegrityProof{
+	refreshed, err := f.svc.RefreshIntegrity(ctx(t), f.user, ch.FlowID, devicebind.IntegrityProof{
 		Assertion: dev.Assert(devicesim.IntegrityClientData(ch.Challenge), devicesim.AssertOptions{})})
 	if err != nil {
 		t.Fatal(err)
@@ -383,7 +383,7 @@ func TestIOSAttestationRejections(t *testing.T) {
 			if b.AppAttestKeyID == nil {
 				b.AppAttestKeyID = dev.KeyID
 			}
-			_, err := f.svc.FinishIOS(ctx(t), ch.FlowID, b)
+			_, err := f.svc.FinishIOS(ctx(t), f.user, ch.FlowID, b)
 			rejected(t, err, c.check)
 		})
 	}
@@ -434,7 +434,7 @@ func TestIOSAttestationRejections(t *testing.T) {
 	for name, build := range requests {
 		dev, key := f.apple.NewDevice(), devicesim.NewKey(t)
 		ch := f.begin(f.user, uuid.Nil, devicebind.PurposeBind)
-		if _, err := f.svc.FinishIOS(ctx(t), ch.FlowID, build(dev, ch.Challenge, key)); !errors.Is(err, devicebind.ErrRequest) {
+		if _, err := f.svc.FinishIOS(ctx(t), f.user, ch.FlowID, build(dev, ch.Challenge, key)); !errors.Is(err, devicebind.ErrRequest) {
 			t.Errorf("%s: err = %v, want ErrRequest", name, err)
 		}
 	}
@@ -444,7 +444,7 @@ func TestIOSDevelopmentEnvironment(t *testing.T) {
 	f := newFixture(t, func(_ *fixture, cfg *devicebind.Config) { cfg.Apple.AllowDevelopment = true })
 	dev, key := f.apple.NewDevice(), devicesim.NewKey(t)
 	ch := f.begin(f.user, uuid.Nil, devicebind.PurposeBind)
-	b, err := f.svc.FinishIOS(ctx(t), ch.FlowID, devicebind.IOSBinding{Role: devicebind.RoleDevice,
+	b, err := f.svc.FinishIOS(ctx(t), f.user, ch.FlowID, devicebind.IOSBinding{Role: devicebind.RoleDevice,
 		PublicKey: devicesim.Point(t, key), AppAttestKeyID: dev.KeyID,
 		Attestation: dev.BindAttestation(ch.Challenge, key, devicesim.AttestOptions{AAGUID: devicesim.AAGUIDDevelopment})})
 	if err != nil || b.Device.Integrity.Environment != "development" {
@@ -483,7 +483,7 @@ func TestIOSAssertionRejections(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			key := devicesim.NewKey(t)
 			ch := f.begin(f.user, d.ID, devicebind.PurposeBind)
-			_, err := f.svc.FinishIOS(ctx(t), ch.FlowID, devicebind.IOSBinding{Role: devicebind.RoleGesture,
+			_, err := f.svc.FinishIOS(ctx(t), f.user, ch.FlowID, devicebind.IOSBinding{Role: devicebind.RoleGesture,
 				PublicKey: devicesim.Point(t, key), Assertion: c.build(ch.Challenge, key)})
 			rejected(t, err, c.check)
 		})
@@ -504,7 +504,7 @@ func TestIOSAssertionRejections(t *testing.T) {
 	// Known-device bindings present an assertion and nothing else.
 	ch := f.begin(f.user, d.ID, devicebind.PurposeBind)
 	key := devicesim.NewKey(t)
-	_, err = f.svc.FinishIOS(ctx(t), ch.FlowID, devicebind.IOSBinding{Role: devicebind.RoleGesture,
+	_, err = f.svc.FinishIOS(ctx(t), f.user, ch.FlowID, devicebind.IOSBinding{Role: devicebind.RoleGesture,
 		PublicKey: devicesim.Point(t, key), AppAttestKeyID: dev.KeyID,
 		Attestation: dev.BindAttestation(ch.Challenge, key, devicesim.AttestOptions{})})
 	is(t, err, devicebind.ErrRequest)
@@ -567,7 +567,7 @@ func TestAndroidLifecycle(t *testing.T) {
 	ch := f.begin(f.user, d.ID, devicebind.PurposeIntegrity)
 	dev.Strong = false
 	fresh := func(v *devicesim.Verdict) { v.Timestamp = f.now() }
-	refreshed, err := f.svc.RefreshIntegrity(ctx(t), ch.FlowID, devicebind.IntegrityProof{
+	refreshed, err := f.svc.RefreshIntegrity(ctx(t), f.user, ch.FlowID, devicebind.IntegrityProof{
 		IntegrityToken: dev.IntegrityToken(ch.Challenge, devicesim.Point(t, kdev2), fresh)})
 	if err != nil {
 		t.Fatal(err)
@@ -578,11 +578,11 @@ func TestAndroidLifecycle(t *testing.T) {
 	}
 	// A verdict bound to the superseded K_dev does not refresh.
 	ch = f.begin(f.user, d.ID, devicebind.PurposeIntegrity)
-	_, err = f.svc.RefreshIntegrity(ctx(t), ch.FlowID, devicebind.IntegrityProof{
+	_, err = f.svc.RefreshIntegrity(ctx(t), f.user, ch.FlowID, devicebind.IntegrityProof{
 		IntegrityToken: dev.IntegrityToken(ch.Challenge, devicesim.Point(t, kdev), fresh)})
 	rejected(t, err, "integrity.nonce")
 	ch = f.begin(f.user, d.ID, devicebind.PurposeIntegrity)
-	_, err = f.svc.RefreshIntegrity(ctx(t), ch.FlowID, devicebind.IntegrityProof{Assertion: []byte{1}})
+	_, err = f.svc.RefreshIntegrity(ctx(t), f.user, ch.FlowID, devicebind.IntegrityProof{Assertion: []byte{1}})
 	is(t, err, devicebind.ErrRequest)
 
 	// Key revocation: owner only, idempotent, reason required.
@@ -740,7 +740,7 @@ func TestAndroidAttestationRejections(t *testing.T) {
 			ch := f.begin(f.user, device, devicebind.PurposeBind)
 			dev := f.google.NewDevice(true)
 			key, chain := dev.GenerateKey(c.role, ch.Challenge, c.opts)
-			_, err := f.svc.FinishAndroid(ctx(t), ch.FlowID, devicebind.AndroidBinding{Role: c.role, Chain: chain,
+			_, err := f.svc.FinishAndroid(ctx(t), f.user, ch.FlowID, devicebind.AndroidBinding{Role: c.role, Chain: chain,
 				IntegrityToken: dev.IntegrityToken(ch.Challenge, devicesim.Point(t, key), nil)})
 			rejected(t, err, c.check)
 		})
@@ -750,7 +750,7 @@ func TestAndroidAttestationRejections(t *testing.T) {
 		dev := f.google.NewDevice(false)
 		dev.PatchLevel = monthsAgo(12)
 		key, chain := dev.GenerateKey(devicebind.RoleDevice, ch.Challenge, devicesim.KeyOptions{})
-		b, err := f.svc.FinishAndroid(ctx(t), ch.FlowID, devicebind.AndroidBinding{Role: devicebind.RoleDevice, Chain: chain,
+		b, err := f.svc.FinishAndroid(ctx(t), f.user, ch.FlowID, devicebind.AndroidBinding{Role: devicebind.RoleDevice, Chain: chain,
 			IntegrityToken: dev.IntegrityToken(ch.Challenge, devicesim.Point(t, key), nil)})
 		if err != nil || b.Key.SecurityLevel != devicebind.LevelTEE {
 			t.Fatalf("binding = %+v, %v", b.Key, err)
@@ -760,7 +760,7 @@ func TestAndroidAttestationRejections(t *testing.T) {
 		ch := f.begin(f.user, uuid.Nil, devicebind.PurposeBind)
 		dev := f.google.NewDevice(true)
 		_, chain := dev.GenerateKey(devicebind.RoleGesture, ch.Challenge, devicesim.KeyOptions{})
-		_, err := f.svc.FinishAndroid(ctx(t), ch.FlowID, devicebind.AndroidBinding{Role: devicebind.RoleGesture, Chain: chain})
+		_, err := f.svc.FinishAndroid(ctx(t), f.user, ch.FlowID, devicebind.AndroidBinding{Role: devicebind.RoleGesture, Chain: chain})
 		is(t, err, devicebind.ErrRequest)
 	})
 }
@@ -845,7 +845,7 @@ func TestPlayIntegrityRejections(t *testing.T) {
 			ch := f.begin(f.user, uuid.Nil, devicebind.PurposeBind)
 			dev := f.google.NewDevice(true)
 			key, chain := dev.GenerateKey(devicebind.RoleDevice, ch.Challenge, devicesim.KeyOptions{})
-			_, err := f.svc.FinishAndroid(ctx(t), ch.FlowID, devicebind.AndroidBinding{Role: devicebind.RoleDevice,
+			_, err := f.svc.FinishAndroid(ctx(t), f.user, ch.FlowID, devicebind.AndroidBinding{Role: devicebind.RoleDevice,
 				Chain: chain, IntegrityToken: c.token(dev, ch.Challenge, devicesim.Point(t, key))})
 			if c.check == "" {
 				if err != nil {
@@ -882,7 +882,7 @@ func TestCoins(t *testing.T) {
 
 	ch := f.begin(f.user, d.ID, devicebind.PurposeCoins)
 	pubs, chains := mint(t, dev, ch.Challenge, 5, devicesim.KeyOptions{})
-	coins, err := f.svc.AttestCoins(ctx(t), ch.FlowID, devicebind.CoinMinting{Chains: chains,
+	coins, err := f.svc.AttestCoins(ctx(t), f.user, ch.FlowID, devicebind.CoinMinting{Chains: chains,
 		IntegrityToken: dev.IntegrityToken(ch.Challenge, kdevPub, nil)})
 	if err != nil {
 		t.Fatal(err)
@@ -953,14 +953,14 @@ func TestCoins(t *testing.T) {
 			if c.token != nil {
 				token = c.token(ch.Challenge)
 			}
-			_, err := f.svc.AttestCoins(ctx(t), ch.FlowID, devicebind.CoinMinting{Chains: chains, IntegrityToken: token})
+			_, err := f.svc.AttestCoins(ctx(t), f.user, ch.FlowID, devicebind.CoinMinting{Chains: chains, IntegrityToken: token})
 			rejected(t, err, c.check)
 		})
 	}
 
 	for _, n := range []int{0, devicebind.MaxCoins + 1} {
 		ch := f.begin(f.user, d.ID, devicebind.PurposeCoins)
-		_, err := f.svc.AttestCoins(ctx(t), ch.FlowID, devicebind.CoinMinting{Chains: make([][][]byte, n)})
+		_, err := f.svc.AttestCoins(ctx(t), f.user, ch.FlowID, devicebind.CoinMinting{Chains: make([][][]byte, n)})
 		is(t, err, devicebind.ErrRequest)
 	}
 	// Without an active K_dev there is nothing to bind the verdict to.
@@ -969,7 +969,7 @@ func TestCoins(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, chains = mint(t, dev, ch.Challenge, 1, devicesim.KeyOptions{})
-	_, err = f.svc.AttestCoins(ctx(t), ch.FlowID, devicebind.CoinMinting{Chains: chains,
+	_, err = f.svc.AttestCoins(ctx(t), f.user, ch.FlowID, devicebind.CoinMinting{Chains: chains,
 		IntegrityToken: dev.IntegrityToken(ch.Challenge, kdevPub, nil)})
 	rejected(t, err, "coins.device")
 
@@ -986,13 +986,13 @@ func TestFlows(t *testing.T) {
 	ch := f.begin(f.user, uuid.Nil, devicebind.PurposeBind)
 	b := devicebind.IOSBinding{Role: devicebind.RoleDevice, PublicKey: devicesim.Point(t, kdev), AppAttestKeyID: dev.KeyID,
 		Attestation: dev.BindAttestation(ch.Challenge, kdev, devicesim.AttestOptions{})}
-	reg, err := f.svc.FinishIOS(ctx(t), ch.FlowID, b)
+	reg, err := f.svc.FinishIOS(ctx(t), f.user, ch.FlowID, b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.svc.FinishIOS(ctx(t), ch.FlowID, b)
+	_, err = f.svc.FinishIOS(ctx(t), f.user, ch.FlowID, b)
 	is(t, err, devicebind.ErrFlow)
-	_, err = f.svc.FinishIOS(ctx(t), "no-such-flow", b)
+	_, err = f.svc.FinishIOS(ctx(t), f.user, "no-such-flow", b)
 	is(t, err, devicebind.ErrFlow)
 
 	_, err = f.svc.Begin(ctx(t), f.user, uuid.Nil, devicebind.Purpose("sudo"))
@@ -1015,15 +1015,15 @@ func TestFlows(t *testing.T) {
 	kgest := devicesim.NewKey(t)
 	gb := devicebind.IOSBinding{Role: devicebind.RoleGesture, PublicKey: devicesim.Point(t, kgest),
 		Assertion: dev.BindAssertion(ch.Challenge, kgest, devicesim.AssertOptions{})}
-	_, err = f.svc.FinishIOS(ctx(t), ch.FlowID, gb)
+	_, err = f.svc.FinishIOS(ctx(t), f.user, ch.FlowID, gb)
 	is(t, err, devicebind.ErrFlow)
-	_, err = f.svc.RefreshIntegrity(ctx(t), ch.FlowID, devicebind.IntegrityProof{Assertion: []byte{1}})
+	_, err = f.svc.RefreshIntegrity(ctx(t), f.user, ch.FlowID, devicebind.IntegrityProof{Assertion: []byte{1}})
 	is(t, err, devicebind.ErrFlow)
 
 	// An expired flow is refused even while Redis still holds it.
 	ch = f.begin(f.user, reg.Device.ID, devicebind.PurposeBind)
 	f.advance(6 * time.Minute)
-	_, err = f.svc.FinishIOS(ctx(t), ch.FlowID, devicebind.IOSBinding{Role: devicebind.RoleGesture,
+	_, err = f.svc.FinishIOS(ctx(t), f.user, ch.FlowID, devicebind.IOSBinding{Role: devicebind.RoleGesture,
 		PublicKey: devicesim.Point(t, kgest), Assertion: dev.BindAssertion(ch.Challenge, kgest, devicesim.AssertOptions{})})
 	is(t, err, devicebind.ErrFlow)
 
@@ -1031,7 +1031,7 @@ func TestFlows(t *testing.T) {
 	ch = f.begin(f.user, reg.Device.ID, devicebind.PurposeBind)
 	adev := f.google.NewDevice(true)
 	akey, chain := adev.GenerateKey(devicebind.RoleGesture, ch.Challenge, devicesim.KeyOptions{})
-	_, err = f.svc.FinishAndroid(ctx(t), ch.FlowID, devicebind.AndroidBinding{Role: devicebind.RoleGesture, Chain: chain,
+	_, err = f.svc.FinishAndroid(ctx(t), f.user, ch.FlowID, devicebind.AndroidBinding{Role: devicebind.RoleGesture, Chain: chain,
 		IntegrityToken: adev.IntegrityToken(ch.Challenge, devicesim.Point(t, akey), nil)})
 	is(t, err, devicebind.ErrRequest)
 
@@ -1049,7 +1049,7 @@ func TestPlatformNotConfigured(t *testing.T) {
 		cfg.Android, cfg.Integrity = devicebind.AndroidConfig{}, nil
 	})
 	ch := f.begin(f.user, uuid.Nil, devicebind.PurposeBind)
-	_, err := f.svc.FinishAndroid(ctx(t), ch.FlowID, devicebind.AndroidBinding{Role: devicebind.RoleDevice})
+	_, err := f.svc.FinishAndroid(ctx(t), f.user, ch.FlowID, devicebind.AndroidBinding{Role: devicebind.RoleDevice})
 	is(t, err, devicebind.ErrPlatform)
 	f.must(f.registerIOS(f.apple.NewDevice(), devicesim.NewKey(t)))
 }
@@ -1080,7 +1080,7 @@ func TestConcurrentRebind(t *testing.T) {
 	errs := make([]error, n)
 	for i, a := range attempts {
 		wg.Go(func() {
-			_, errs[i] = f.svc.FinishAndroid(context.Background(), a.flow, devicebind.AndroidBinding{
+			_, errs[i] = f.svc.FinishAndroid(context.Background(), f.user, a.flow, devicebind.AndroidBinding{
 				Role: devicebind.RoleDevice, Chain: a.chain, IntegrityToken: a.token})
 		})
 	}
@@ -1110,11 +1110,12 @@ func TestLockActiveKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var dev1 devicebind.Device
 	lock := func(id uuid.UUID) (devicebind.Key, error) {
 		var k devicebind.Key
 		err := pgx.BeginFunc(ctx(t), f.pool, func(tx pgx.Tx) error {
 			var err error
-			k, err = devicebind.LockActiveKey(ctx(t), tx, id)
+			k, dev1, err = devicebind.LockActiveKey(ctx(t), tx, id)
 			return err
 		})
 		return k, err
@@ -1124,6 +1125,9 @@ func TestLockActiveKey(t *testing.T) {
 		!slices.Equal(k.PublicKey, gest.Key.PublicKey) {
 		t.Fatalf("locked %+v %v", k, err)
 	}
+	if dev1.ID != b.Device.ID || dev1.UserID != f.user || dev1.IntegrityAt.IsZero() || dev1.Platform != devicebind.PlatformAndroid {
+		t.Fatalf("device %+v", dev1)
+	}
 	if _, err := lock(uuid.New()); !errors.Is(err, devicebind.ErrNotFound) {
 		t.Fatalf("unknown key: %v", err)
 	}
@@ -1132,7 +1136,7 @@ func TestLockActiveKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := devicebind.LockActiveKey(ctx(t), tx, b.Key.ID); err != nil {
+	if _, _, err := devicebind.LockActiveKey(ctx(t), tx, b.Key.ID); err != nil {
 		t.Fatal(err)
 	}
 	revoked := make(chan error, 1)
@@ -1164,5 +1168,25 @@ func TestLockActiveKey(t *testing.T) {
 	}
 	if _, err := lock(b2.Key.ID); !errors.Is(err, devicebind.ErrRevoked) {
 		t.Fatalf("revoked key: %v", err)
+	}
+}
+
+func TestFlowBelongsToItsUser(t *testing.T) {
+	f := newFixture(t, nil)
+	dev := f.google.NewDevice(false)
+	ch := f.begin(f.user, uuid.Nil, devicebind.PurposeBind)
+	key, chain := dev.GenerateKey(devicebind.RoleDevice, ch.Challenge, devicesim.KeyOptions{})
+	b := devicebind.AndroidBinding{Role: devicebind.RoleDevice, Chain: chain,
+		IntegrityToken: dev.IntegrityToken(ch.Challenge, devicesim.Point(t, key), nil)}
+	// Someone else holding the flow id cannot bind into the user's account
+	// (or their own); the flow is spent.
+	if _, err := f.svc.FinishAndroid(ctx(t), f.other, ch.FlowID, b); !errors.Is(err, devicebind.ErrFlow) {
+		t.Fatalf("finish by another user: %v", err)
+	}
+	if _, err := f.svc.FinishAndroid(ctx(t), f.user, ch.FlowID, b); !errors.Is(err, devicebind.ErrFlow) {
+		t.Fatalf("spent flow: %v", err)
+	}
+	if ds, err := f.svc.Devices(ctx(t), f.other); err != nil || len(ds) != 0 {
+		t.Fatalf("other's devices %v %v", ds, err)
 	}
 }

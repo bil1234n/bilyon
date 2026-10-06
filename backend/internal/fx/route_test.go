@@ -17,7 +17,9 @@ type clock struct {
 	t  time.Time
 }
 
-func newClock() *clock { return &clock{t: time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)} }
+// newClock starts at the real time: tests that place ledger holds pass
+// expiries the ledger checks against the database clock.
+func newClock() *clock { return &clock{t: time.Now().UTC().Truncate(time.Second)} }
 
 func (c *clock) now() time.Time {
 	c.mu.Lock()

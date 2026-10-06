@@ -98,26 +98,31 @@ func (s *Service) Keys() cose.KeyResolver {
 func (s *Service) now() time.Time { return s.cfg.Now().UTC().Truncate(time.Second) }
 
 // ensureSubject returns the user's subject, creating it on first use.
+// Subjects never change, so nothing needs locking: of two concurrent
+// first uses, the second finds the first one's subject.
 func ensureSubject(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (string, error) {
 	var subject string
-	err := tx.QueryRow(ctx, `SELECT subject FROM subjects WHERE user_id = $1 FOR UPDATE`, userID).Scan(&subject)
+	err := tx.QueryRow(ctx, `SELECT subject FROM subjects WHERE user_id = $1`, userID).Scan(&subject)
 	if err == nil {
 		return subject, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", err
 	}
-	if subject, err = NewSubject(); err != nil {
+	fresh, err := NewSubject()
+	if err != nil {
 		return "", err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO subjects (user_id, subject) VALUES ($1, $2)`, userID, subject); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return "", fmt.Errorf("%w: unknown user", ErrRequest)
-		}
-		return "", err
+	err = tx.QueryRow(ctx, `INSERT INTO subjects (user_id, subject) VALUES ($1, $2)
+		ON CONFLICT (user_id) DO NOTHING RETURNING subject`, userID, fresh).Scan(&subject)
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.As(err, &pgErr) && pgErr.Code == "23503":
+		return "", fmt.Errorf("%w: unknown user", ErrRequest)
+	case errors.Is(err, pgx.ErrNoRows):
+		err = tx.QueryRow(ctx, `SELECT subject FROM subjects WHERE user_id = $1`, userID).Scan(&subject)
 	}
-	return subject, nil
+	return subject, err
 }
 
 // currentEntry loads and locks the subject's entry; nil before the first.

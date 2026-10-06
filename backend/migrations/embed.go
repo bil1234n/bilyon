@@ -31,8 +31,14 @@ var FX embed.FS
 // FXDir is the directory inside FX that contains the files.
 const FXDir = "fx"
 
-// Grants is the least-privilege script for the runtime role. It is not a
-// migration: operators run it as the schema owner (see the file header).
+// Grants is the least-privilege script for the ledger's runtime role. It
+// is not a migration: operators run it as the schema owner (see the file
+// header).
 //
 //go:embed ops/grants.sql
 var Grants string
+
+// GatewayGrants is the least-privilege script for gatewayd's runtime role.
+//
+//go:embed ops/gateway_grants.sql
+var GatewayGrants string

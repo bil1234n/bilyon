@@ -120,6 +120,7 @@ const (
 	ReasonPayeeChanged      = "payee_changed"      // PAYEE_CHANGED: the entry moved past the signed version
 	ReasonPayeeCurrency     = "payee_currency"     // the payee does not receive the currency
 	ReasonSelfPayment       = "self_payment"       // payer and payee are the same person
+	ReasonIntegrityStale    = "integrity_stale"    // the signing device's integrity evidence is too old
 	ReasonQuoteInvalid      = "quote_invalid"      // the FX quote is unusable for this intent
 	ReasonInsufficientFunds = "insufficient_funds" // the ledger refused the hold for lack of funds
 	ReasonAccountFrozen     = "account_frozen"     // the payer's ledger account is frozen
@@ -265,6 +266,10 @@ type Config struct {
 	// GestureWindow amount) per GestureWindow (5 per 60 s).
 	GestureCount  int
 	GestureWindow time.Duration
+	// IntegrityMaxAge is how old the signing device's latest integrity
+	// evidence (its attestation, an App Attest assertion or a Play Integrity
+	// verdict) may be (30 days); apps refresh it in the background.
+	IntegrityMaxAge time.Duration
 	// The sweeper finishes intents whose ledger call has been pending this
 	// long (15 s), in batches of SweepBatch (100).
 	RedriveAfter time.Duration
@@ -289,7 +294,7 @@ func (c *Config) defaults() error {
 	}{{&c.NonceTTL, 10 * time.Minute}, {&c.MaxAge, time.Minute}, {&c.ClockSkew, 30 * time.Second},
 		{&c.MaxFlight, 2 * time.Second}, {&c.LiveTTL, 30 * time.Second}, {&c.DropTTL, time.Minute},
 		{&c.ClaimTTL, 7 * 24 * time.Hour}, {&c.HoldMargin, time.Hour}, {&c.GestureWindow, time.Minute},
-		{&c.RedriveAfter, 15 * time.Second}} {
+		{&c.RedriveAfter, 15 * time.Second}, {&c.IntegrityMaxAge, 30 * 24 * time.Hour}} {
 		if *d.v == 0 {
 			*d.v = d.def
 		}

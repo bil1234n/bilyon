@@ -277,7 +277,7 @@ func (f *fixture) bind(p *party, device uuid.UUID, role string) (*ecdsa.PrivateK
 		f.t.Fatal(err)
 	}
 	key, chain := p.phone.GenerateKey(role, ch.Challenge, devicesim.KeyOptions{})
-	b, err := f.binder.FinishAndroid(ctx(f.t), ch.FlowID, devicebind.AndroidBinding{Role: role, Chain: chain,
+	b, err := f.binder.FinishAndroid(ctx(f.t), p.user, ch.FlowID, devicebind.AndroidBinding{Role: role, Chain: chain,
 		IntegrityToken: p.phone.IntegrityToken(ch.Challenge, devicesim.Point(f.t, key), nil)})
 	if err != nil {
 		f.t.Fatal(err)

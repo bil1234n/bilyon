@@ -262,8 +262,8 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Intent, error
 		if err != nil {
 			return err
 		}
-		if _, err := devicebind.LockActiveKey(ctx, tx, key.ID); errors.Is(err, devicebind.ErrRevoked) ||
-			errors.Is(err, devicebind.ErrNotFound) {
+		_, device, err := devicebind.LockActiveKey(ctx, tx, key.ID)
+		if errors.Is(err, devicebind.ErrRevoked) || errors.Is(err, devicebind.ErrNotFound) {
 			return fmt.Errorf("%w: key %s was revoked", ErrTxAuth, key.ID)
 		} else if err != nil {
 			return err
@@ -275,6 +275,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Intent, error
 		in.HoldExpiresAt = s.holdExpiry(in)
 		if reason == "" && status != "active" {
 			reason = ReasonPayerInactive
+		}
+		if reason == "" && now.Sub(device.IntegrityAt) > s.cfg.IntegrityMaxAge {
+			reason = ReasonIntegrityStale
 		}
 		if reason == "" {
 			if reason, err = s.checkLimits(ctx, tx, in); err != nil {
