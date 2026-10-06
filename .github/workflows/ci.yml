@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go (backend, reference)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_USER: bilyon
+          POSTGRES_PASSWORD: bilyon
+          POSTGRES_DB: bilyon
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bilyon -d bilyon"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      # Each test clones its own database from a migrated template.
+      BILYON_TEST_DATABASE_URL: postgres://bilyon:bilyon@127.0.0.1:5432/bilyon?sslmode=disable
+      # A missing server fails the run instead of skipping its tests.
+      BILYON_REQUIRE_INFRA: "1"
+      TIGERBEETLE_VERSION: 0.17.9
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: |
+            backend/go.sum
+            reference/go.sum
+            go.work.sum
+
+      # Tests start a throwaway redis-server per test (no shared state).
+      - name: Install redis-server
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq redis-server
+
+      # Tests start a throwaway single-replica cluster per test package.
+      - name: Install TigerBeetle ${{ env.TIGERBEETLE_VERSION }}
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/tigerbeetle.zip" \
+            "https://github.com/tigerbeetle/tigerbeetle/releases/download/${TIGERBEETLE_VERSION}/tigerbeetle-x86_64-linux.zip"
+          unzip -o "$RUNNER_TEMP/tigerbeetle.zip" -d "$RUNNER_TEMP/tigerbeetle"
+          "$RUNNER_TEMP/tigerbeetle/tigerbeetle" version
+          echo "BILYON_TIGERBEETLE_BIN=$RUNNER_TEMP/tigerbeetle/tigerbeetle" >> "$GITHUB_ENV"
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test-race
+
+      - name: Build
+        run: make build
