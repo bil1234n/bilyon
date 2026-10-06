@@ -37,9 +37,9 @@ jobs:
       BILYON_REQUIRE_INFRA: "1"
       TIGERBEETLE_VERSION: 0.17.9
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: |

@@ -58,6 +58,7 @@ func TestShadowFollowsConcurrentLedgerWorkload(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var entries []uuid.UUID
+	var lastShortExpiry int64 // unix nanos of the latest short hold's expiry
 	record := func(en ledger.Entry, err error) error {
 		if err == nil {
 			mu.Lock()
@@ -111,14 +112,24 @@ func TestShadowFollowsConcurrentLedgerWorkload(t *testing.T) {
 						ledger.Posting{AccountID: fxUSD.ID, Amount: -(eur * 108 / 100)}, ledger.Posting{AccountID: usd[rng.IntN(len(usd))].ID, Amount: eur * 108 / 100}))
 				case 3, 4, 5:
 					from, _ := pickUsers()
+					// Short holds are left to the expiry sweeper. The ledger
+					// checks expiry against its clock after waiting for locks,
+					// so keep well clear of its 1 s minimum.
 					expiry := time.Minute
 					if rng.IntN(3) == 0 {
-						expiry = 1100 * time.Millisecond // the shortest expiry the ledger accepts, plus margin
+						expiry = 2500 * time.Millisecond
 					}
+					expiresAt := time.Now().Add(expiry)
 					var h ledger.Hold
 					h, err = e.eng.PlaceHold(ctx, ledger.PlaceHold{IdempotencyKey: e.key("h"), AccountID: from.ID,
-						Amount: 1 + rng.Int64N(20_000), Reason: "throw", ExpiresAt: time.Now().Add(expiry)})
-					if err != nil || expiry < time.Minute {
+						Amount: 1 + rng.Int64N(20_000), Reason: "throw", ExpiresAt: expiresAt})
+					if err != nil {
+						break
+					}
+					if expiry < time.Minute {
+						mu.Lock()
+						lastShortExpiry = max(lastShortExpiry, expiresAt.UnixNano())
+						mu.Unlock()
 						break
 					}
 					if rng.IntN(3) == 0 {
@@ -176,7 +187,10 @@ func TestShadowFollowsConcurrentLedgerWorkload(t *testing.T) {
 		e.reconciled(tl)
 	}
 	wg.Wait()
-	time.Sleep(1200 * time.Millisecond) // let the short holds expire
+	mu.Lock()
+	wait := time.Until(time.Unix(0, lastShortExpiry)) + 100*time.Millisecond
+	mu.Unlock()
+	time.Sleep(max(wait, 0)) // let every short hold expire
 	close(stop)
 	bg.Wait()
 	if _, err := e.eng.ExpireHolds(context.Background(), 1000); err != nil {
