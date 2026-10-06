@@ -1,0 +1,133 @@
+// FX engine API (RFC 0001 §3.C): firm quotes with a rate lock, and their
+// idempotent execution. The gateway and the payment orchestrator call it
+// over mTLS; treasury tooling uses the admin service.
+//
+// Conventions:
+//   - Ids are canonical UUID strings; amounts are int64 minor units of the
+//     named currency.
+//   - ExecuteQuote is idempotent per quote id: retries return the stored
+//     execution, and an execution interrupted before its ledger booking is
+//     resumed.
+//   - Failures carry a google.rpc.ErrorInfo with domain "fx.bilyon" and a
+//     reason (EXPIRED, REQUOTE, TAMPERED, NO_ROUTE, FUNDING, ...).
+syntax = "proto3";
+
+package bilyon.fx.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/bil1234n/bilyon/backend/gen/bilyon/fx/v1;fxv1";
+
+service FXService {
+  rpc CreateQuote(CreateQuoteRequest) returns (Quote);
+  rpc GetQuote(GetQuoteRequest) returns (GetQuoteResponse);
+  rpc ExecuteQuote(ExecuteQuoteRequest) returns (Execution);
+}
+
+service FXAdminService {
+  rpc ListEdges(ListEdgesRequest) returns (ListEdgesResponse);
+  rpc SetEdgeEnabled(SetEdgeEnabledRequest) returns (Edge);
+}
+
+message CreateQuoteRequest {
+  string user_id = 1;
+  string from = 2;
+  string to = 3;
+  int64 amount_in = 4;   // source minor units
+  int64 ttl_ms = 5;      // 0: the default lock (30 s)
+}
+
+message Allocation {
+  repeated string edge_ids = 1;
+  repeated string venues = 2;
+  int64 in = 3;
+  int64 out = 4;
+}
+
+message Quote {
+  string id = 1;
+  string user_id = 2;
+  string from = 3;
+  string to = 4;
+  int64 amount_in = 5;
+  int64 amount_out = 6;      // what the customer receives
+  int64 exec_out = 7;        // what the planned routes deliver
+  string mid_rate = 8;       // target major units per source major unit
+  double mid_out = 9;
+  double exec_cost_bps = 10;
+  double buffer_bps = 11;
+  double margin_bps = 12;
+  double fee_bps = 13;       // all-in cost against mid
+  repeated Allocation allocations = 14;
+  string state = 15;         // open, executing, booked, expired, requoted, failed
+  google.protobuf.Timestamp created_at = 16;
+  google.protobuf.Timestamp expires_at = 17;
+  string key_id = 18;
+  bytes signature = 19;      // HMAC-SHA256 under K_quote, presented at execution
+}
+
+message GetQuoteRequest {
+  string user_id = 1;
+  string quote_id = 2;
+}
+
+message GetQuoteResponse {
+  Quote quote = 1;
+  Execution execution = 2;   // absent until executed
+}
+
+message ExecuteQuoteRequest {
+  string quote_id = 1;
+  bytes signature = 2;
+  string user_id = 3;
+  // Exactly one funding source: a pending hold on the user's account in the
+  // quote's source currency, or the account itself.
+  string hold_id = 4;
+  string source_account = 5;
+  string destination_account = 6;
+}
+
+message Execution {
+  string quote_id = 1;
+  int64 amount_in = 2;
+  int64 amount_out = 3;
+  int64 market_out = 4;
+  int64 pnl = 5;
+  repeated string entry_ids = 6;
+  string state = 7;
+  string failure = 8;
+  google.protobuf.Timestamp executed_at = 9;
+  google.protobuf.Timestamp booked_at = 10;
+}
+
+message ListEdgesRequest {}
+
+message Level {
+  int64 size = 1;
+  string rate = 2;
+}
+
+message Edge {
+  string id = 1;
+  string from = 2;
+  string to = 3;
+  string venue = 4;
+  repeated Level ladder = 5;
+  int64 depth = 6;
+  double reserved = 7;
+  double executed = 8;
+  google.protobuf.Timestamp updated_at = 9;
+  bool enabled = 10;
+  bool stale = 11;
+  repeated string quarantine_cycle = 12;  // non-empty when quarantined
+}
+
+message ListEdgesResponse {
+  repeated Edge edges = 1;
+}
+
+message SetEdgeEnabledRequest {
+  string edge_id = 1;
+  bool enabled = 2;
+  string reason = 3;
+}

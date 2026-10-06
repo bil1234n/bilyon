@@ -48,9 +48,15 @@ type Server struct {
 	dir      string
 	setup    Setup
 
-	tplOnce sync.Once
-	tplName string
-	tplErr  error
+	mu        sync.Mutex
+	templates map[string]*template
+}
+
+// template is one migrated template database, created on first use.
+type template struct {
+	once sync.Once
+	name string
+	err  error
 }
 
 // ErrUnavailable means no PostgreSQL could be found or started.
@@ -241,29 +247,41 @@ func (s *Server) dbURL(name string) string {
 	return u.String()
 }
 
-func (s *Server) template(ctx context.Context) (string, error) {
-	s.tplOnce.Do(func() {
+// templateFor returns the template database for key, creating it with
+// setup on first use.
+func (s *Server) templateFor(ctx context.Context, key string, setup Setup) (string, error) {
+	s.mu.Lock()
+	if s.templates == nil {
+		s.templates = map[string]*template{}
+	}
+	tpl, ok := s.templates[key]
+	if !ok {
+		tpl = &template{}
+		s.templates[key] = tpl
+	}
+	s.mu.Unlock()
+	tpl.once.Do(func() {
 		name := "bilyon_tpl_" + randomSuffix()
 		if err := s.adminExec(ctx, fmt.Sprintf("CREATE DATABASE %s", pgx.Identifier{name}.Sanitize())); err != nil {
-			s.tplErr = err
+			tpl.err = err
 			return
 		}
-		if s.setup != nil {
+		if setup != nil {
 			pool, err := pgxpool.New(ctx, s.dbURL(name))
 			if err != nil {
-				s.tplErr = err
+				tpl.err = err
 				return
 			}
-			err = s.setup(ctx, pool)
+			err = setup(ctx, pool)
 			pool.Close()
 			if err != nil {
-				s.tplErr = fmt.Errorf("pgtest: template setup: %w", err)
+				tpl.err = fmt.Errorf("pgtest: template setup: %w", err)
 				return
 			}
 		}
-		s.tplName = name
+		tpl.name = name
 	})
-	return s.tplName, s.tplErr
+	return tpl.name, tpl.err
 }
 
 func (s *Server) adminExec(ctx context.Context, sql string) error {
@@ -281,6 +299,19 @@ func (s *Server) adminExec(ctx context.Context, sql string) error {
 // the test (or fails it under BILYON_REQUIRE_INFRA=1).
 func (s *Server) Database(t testing.TB) *pgxpool.Pool {
 	t.Helper()
+	return s.clone(t, "", nil, true)
+}
+
+// DatabaseWith is Database for another schema: the clone comes from a
+// template prepared by setup, created once per key. Tests that need, say,
+// an FX database and a ledger database use one server for both.
+func (s *Server) DatabaseWith(t testing.TB, key string, setup Setup) *pgxpool.Pool {
+	t.Helper()
+	return s.clone(t, "named:"+key, setup, false)
+}
+
+func (s *Server) clone(t testing.TB, key string, setup Setup, main bool) *pgxpool.Pool {
+	t.Helper()
 	if s == nil {
 		if os.Getenv("BILYON_REQUIRE_INFRA") == "1" {
 			t.Fatal(ErrUnavailable)
@@ -289,7 +320,10 @@ func (s *Server) Database(t testing.TB) *pgxpool.Pool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	tpl, err := s.template(ctx)
+	if main {
+		setup = s.setup
+	}
+	tpl, err := s.templateFor(ctx, key, setup)
 	if err != nil {
 		t.Fatalf("pgtest: template: %v", err)
 	}

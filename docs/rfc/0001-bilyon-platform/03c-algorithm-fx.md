@@ -109,7 +109,7 @@ AmountOut = ⌊ execOut · keep_ppm / 10⁶ ⌋                                 
 | Pair | σ | TTL | Buffer |
 |---|---|---|---|
 | EUR/USD | 7 % | 30 s | **1.59 bp** |
-| EUR/USD | 7 % | 24 h | 85.2 bp. Long locks are priced as forwards or options, not with this buffer |
+| EUR/USD | 7 % | 24 h | 85.4 bp. Long locks are priced as forwards or options, not with this buffer |
 | USD/NGN | 35 % + 15 bp jump | 30 s | 7.95 + 15 = 22.95 bp |
 
 **Worked quote (`TestQuoteLifecycle`).** 10 000.00 EUR → USD over netting at mid gives execOut = 10 850.00. The

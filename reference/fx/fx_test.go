@@ -173,7 +173,7 @@ func TestLockBuffer(t *testing.T) {
 	if b := LockBufferBps(0.35, 30, 2.33); math.Abs(b-7.95) > 0.02 {
 		t.Fatalf("NGN 30 s buffer %.3f bp", b)
 	}
-	if b := LockBufferBps(0.07, 24*3600, 2.33); math.Abs(b-85.2) > 0.2 {
+	if b := LockBufferBps(0.07, 24*3600, 2.33); math.Abs(b-85.37) > 0.01 {
 		t.Fatalf("24 h invoice lock %.2f bp", b) // why long locks are priced separately
 	}
 }
