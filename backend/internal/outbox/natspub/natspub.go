@@ -26,10 +26,11 @@ const (
 	HeaderPartition = "Bilyon-Partition"
 )
 
-// StreamConfig describes the JetStream stream that stores ledger events.
+// StreamConfig describes the JetStream stream that stores a service's events.
 type StreamConfig struct {
 	Name            string        // default "BILYON_LEDGER"
-	SubjectPrefix   string        // default "bilyon"; subjects are "<prefix>.ledger.>"
+	SubjectPrefix   string        // default "bilyon"; messages go to "<prefix>.<topic>"
+	Subjects        []string      // stream subjects, default ["<prefix>.ledger.>"]
 	MaxAge          time.Duration // default 7 days
 	DuplicateWindow time.Duration // default 2 minutes
 	Replicas        int           // default 1 (3 in production clusters)
@@ -42,6 +43,9 @@ func (c *StreamConfig) normalise() {
 	}
 	if c.SubjectPrefix == "" {
 		c.SubjectPrefix = "bilyon"
+	}
+	if len(c.Subjects) == 0 {
+		c.Subjects = []string{c.SubjectPrefix + ".ledger.>"}
 	}
 	if c.MaxAge <= 0 {
 		c.MaxAge = 7 * 24 * time.Hour
@@ -73,7 +77,7 @@ func New(ctx context.Context, nc *nats.Conn, cfg StreamConfig) (*Publisher, erro
 	if cfg.EnsureOnConnect {
 		if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 			Name:       cfg.Name,
-			Subjects:   []string{cfg.SubjectPrefix + ".ledger.>"},
+			Subjects:   cfg.Subjects,
 			Storage:    jetstream.FileStorage,
 			Retention:  jetstream.LimitsPolicy,
 			MaxAge:     cfg.MaxAge,

@@ -15,6 +15,14 @@ var Ledger embed.FS
 // LedgerDir is the directory inside Ledger that contains the files.
 const LedgerDir = "ledger"
 
+// Gateway holds the gateway schema migrations.
+//
+//go:embed gateway/*.sql
+var Gateway embed.FS
+
+// GatewayDir is the directory inside Gateway that contains the files.
+const GatewayDir = "gateway"
+
 // Grants is the least-privilege script for the runtime role. It is not a
 // migration: operators run it as the schema owner (see the file header).
 //

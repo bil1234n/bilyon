@@ -24,7 +24,8 @@ import (
 // Partitions is the fixed number of outbox partitions (see the schema CHECK).
 const Partitions = 16
 
-// Source identifies events produced by this service in CloudEvents "source".
+// Source is the default CloudEvents "source" (the ledger); other services
+// set Event.Source.
 const Source = "bilyon.ledger"
 
 // Partition maps a message key to its partition. The hash is computed in Go
@@ -50,6 +51,7 @@ type Envelope struct {
 
 // Event is what producers write.
 type Event struct {
+	Source  string            // CloudEvents source, default Source
 	Topic   string            // e.g. "ledger.entry.posted"
 	Key     string            // ordering key, e.g. "intent:<id>" or an entry id
 	Subject string            // CloudEvents subject (optional)
@@ -70,10 +72,14 @@ func Write(ctx context.Context, tx pgx.Tx, ev Event) (Envelope, error) {
 	if err != nil {
 		return Envelope{}, fmt.Errorf("outbox: event id: %w", err)
 	}
+	source := ev.Source
+	if source == "" {
+		source = Source
+	}
 	env := Envelope{
 		SpecVersion:     "1.0",
 		ID:              id.String(),
-		Source:          Source,
+		Source:          source,
 		Type:            ev.Topic,
 		Subject:         ev.Subject,
 		Time:            time.Now().UTC().Round(time.Microsecond),
