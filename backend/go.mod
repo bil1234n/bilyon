@@ -11,6 +11,9 @@ require (
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/tigerbeetle/tigerbeetle-go v0.17.9
 	golang.org/x/sync v0.23.0
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8
+	google.golang.org/grpc v1.84.0
+	google.golang.org/protobuf v1.36.12
 	pgregory.net/rapid v1.3.0
 )
 
@@ -33,8 +36,8 @@ require (
 	github.com/prometheus/procfs v0.21.1 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 )

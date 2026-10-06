@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"text/tabwriter"
 	"time"
 
@@ -18,12 +19,20 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
+	ledgerv1 "github.com/bil1234n/bilyon/backend/gen/bilyon/ledger/v1"
 	"github.com/bil1234n/bilyon/backend/internal/ledger/pgledger"
+	"github.com/bil1234n/bilyon/backend/internal/ledgerapi"
 	"github.com/bil1234n/bilyon/backend/internal/migrate"
 	"github.com/bil1234n/bilyon/backend/internal/outbox"
 	"github.com/bil1234n/bilyon/backend/internal/outbox/natspub"
 	"github.com/bil1234n/bilyon/backend/internal/platform/config"
+	"github.com/bil1234n/bilyon/backend/internal/platform/grpcx"
 	"github.com/bil1234n/bilyon/backend/internal/platform/httpserver"
 	"github.com/bil1234n/bilyon/backend/internal/platform/lifecycle"
 	"github.com/bil1234n/bilyon/backend/internal/platform/logging"
@@ -47,6 +56,14 @@ type Config struct {
 	AuditInterval        time.Duration // BILYON_AUDIT_INTERVAL
 	IdempotencyRetention time.Duration // BILYON_IDEMPOTENCY_RETENTION
 	OutboxRetention      time.Duration // BILYON_OUTBOX_RETENTION
+
+	// The ledger command API (bilyon.ledger.v1) is served when GRPCAddr is
+	// set: mutual TLS with a per-method ACL, or plaintext for local
+	// development only when GRPCInsecure is set.
+	GRPCAddr     string         // BILYON_GRPC_ADDR
+	GRPCTLS      grpcx.TLSFiles // BILYON_GRPC_TLS_CERT, BILYON_GRPC_TLS_KEY, BILYON_GRPC_TLS_CA
+	GRPCACL      grpcx.ACL      // BILYON_GRPC_ACL, e.g. "spiffe://bilyon/gateway=*"
+	GRPCInsecure bool           // BILYON_GRPC_INSECURE
 }
 
 // LoadConfig reads and validates the configuration.
@@ -71,13 +88,28 @@ func LoadConfig(env *config.Env, needNATS bool) (Config, error) {
 	} else {
 		c.NATSURL = env.String("BILYON_NATS_URL", "")
 	}
-	return c, env.Err()
+	c.GRPCAddr = env.String("BILYON_GRPC_ADDR", "")
+	c.GRPCInsecure = env.Bool("BILYON_GRPC_INSECURE", false)
+	errs := []error{env.Err()}
+	if c.GRPCAddr != "" && !c.GRPCInsecure {
+		c.GRPCTLS = grpcx.TLSFiles{CertFile: env.Required("BILYON_GRPC_TLS_CERT"),
+			KeyFile: env.Required("BILYON_GRPC_TLS_KEY"), CAFile: env.Required("BILYON_GRPC_TLS_CA")}
+		acl, err := grpcx.ParseACL(env.Required("BILYON_GRPC_ACL"))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("BILYON_GRPC_ACL: %w", err))
+		}
+		c.GRPCACL = acl
+		errs[0] = env.Err()
+	}
+	return c, errors.Join(errs...)
 }
 
 // Hooks lets tests observe the running daemon.
 type Hooks struct {
 	// OnListening receives the bound address of the operational server.
 	OnListening func(addr string)
+	// OnGRPCListening receives the bound address of the gRPC server.
+	OnGRPCListening func(addr string)
 }
 
 const usage = `usage: ledgerd <command>
@@ -218,11 +250,69 @@ func Run(ctx context.Context, cfg Config, pool *pgxpool.Pool, ms []migrate.Migra
 	if hooks.OnListening != nil {
 		hooks.OnListening(addr)
 	}
-	return lifecycle.Run(ctx, log,
-		lifecycle.Component{Name: "ops-http", Run: ops.Run},
-		lifecycle.Component{Name: "outbox-relay", Run: relay.Run},
-		lifecycle.Component{Name: "hold-expirer", Run: expirer.Run},
-		lifecycle.Component{Name: "auditor", Run: aud.Run},
-		lifecycle.Component{Name: "idempotency-pruner", Run: pruner.Run},
-	)
+	components := []lifecycle.Component{
+		{Name: "ops-http", Run: ops.Run},
+		{Name: "outbox-relay", Run: relay.Run},
+		{Name: "hold-expirer", Run: expirer.Run},
+		{Name: "auditor", Run: aud.Run},
+		{Name: "idempotency-pruner", Run: pruner.Run},
+	}
+	if cfg.GRPCAddr != "" {
+		serve, err := grpcServer(cfg, eng, log, reg, hooks)
+		if err != nil {
+			return err
+		}
+		components = append(components, lifecycle.Component{Name: "grpc", Run: serve})
+	}
+	return lifecycle.Run(ctx, log, components...)
+}
+
+// grpcServer binds the ledger command API and returns its run function.
+func grpcServer(cfg Config, eng *pgledger.Engine, log *slog.Logger, reg prometheus.Registerer, hooks Hooks) (func(context.Context) error, error) {
+	var creds credentials.TransportCredentials
+	if cfg.GRPCInsecure {
+		log.Warn("gRPC ledger API served WITHOUT TLS or authorisation (BILYON_GRPC_INSECURE); development only")
+		creds = insecure.NewCredentials()
+	} else {
+		c, err := grpcx.ServerTLS(cfg.GRPCTLS)
+		if err != nil {
+			return nil, err
+		}
+		creds = c
+	}
+	s := grpc.NewServer(grpc.Creds(creds), grpc.ChainUnaryInterceptor(
+		grpcx.RecoverUnary(log),
+		grpcx.ObserveUnary(log, grpcx.NewMetrics(reg)),
+		grpcx.AuthorizeUnary(cfg.GRPCACL, cfg.GRPCInsecure),
+	))
+	ledgerv1.RegisterLedgerServiceServer(s, ledgerapi.NewServer(eng))
+	hs := health.NewServer()
+	hs.SetServingStatus(ledgerv1.LedgerService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(s, hs)
+	l, err := net.Listen("tcp", cfg.GRPCAddr)
+	if err != nil {
+		return nil, fmt.Errorf("listen %s: %w", cfg.GRPCAddr, err)
+	}
+	log.Info("ledger gRPC API listening", slog.String("addr", l.Addr().String()), slog.Bool("mtls", !cfg.GRPCInsecure))
+	if hooks.OnGRPCListening != nil {
+		hooks.OnGRPCListening(l.Addr().String())
+	}
+	return func(ctx context.Context) error {
+		errCh := make(chan error, 1)
+		go func() { errCh <- s.Serve(l) }()
+		select {
+		case err := <-errCh:
+			return err
+		case <-ctx.Done():
+			hs.Shutdown()
+			stopped := make(chan struct{})
+			go func() { s.GracefulStop(); close(stopped) }()
+			select {
+			case <-stopped:
+			case <-time.After(10 * time.Second):
+				s.Stop()
+			}
+			return nil
+		}
+	}, nil
 }

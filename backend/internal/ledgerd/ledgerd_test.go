@@ -14,12 +14,17 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"google.golang.org/grpc"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/bil1234n/bilyon/backend/internal/ledger"
 	"github.com/bil1234n/bilyon/backend/internal/ledger/pgledger"
+	"github.com/bil1234n/bilyon/backend/internal/ledgerapi"
 	"github.com/bil1234n/bilyon/backend/internal/ledgerd"
 	"github.com/bil1234n/bilyon/backend/internal/migrate"
 	"github.com/bil1234n/bilyon/backend/internal/platform/config"
+	"github.com/bil1234n/bilyon/backend/internal/platform/grpcx"
+	"github.com/bil1234n/bilyon/backend/internal/testinfra/certs"
 	"github.com/bil1234n/bilyon/backend/internal/testinfra/ledgerdb"
 	"github.com/bil1234n/bilyon/backend/internal/testinfra/natstest"
 	"github.com/bil1234n/bilyon/backend/internal/testinfra/pgtest"
@@ -98,7 +103,7 @@ func TestRunPublishesEventsExpiresHoldsAndShutsDownCleanly(t *testing.T) {
 	}
 	now, _ := eng.Now(bg(t))
 	h, err := eng.PlaceHold(bg(t), ledger.PlaceHold{IdempotencyKey: "hold", AccountID: alice.ID, Amount: 2_000,
-		Reason: "throw_intent", ExpiresAt: now.Add(1200 * time.Millisecond)})
+		Reason: "throw_intent", ExpiresAt: now.Add(2 * time.Second)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,5 +248,99 @@ func TestConfigurationErrors(t *testing.T) {
 	}
 	if code, out, _ := runCmd(t, nil, "help"); code != 0 || !strings.Contains(out, "usage: ledgerd") {
 		t.Fatalf("help: %d %s", code, out)
+	}
+}
+
+func TestRunServesTheLedgerOverMutualTLS(t *testing.T) {
+	pool := srv.Database(t)
+	ns := natstest.Start(t)
+	ca := certs.NewCA(t, "ledgerd-test")
+	server := ca.Leaf("ledgerd", "spiffe://bilyon/ledger", "ledgerd")
+	env := map[string]string{
+		"BILYON_DATABASE_URL":     pgtest.URL(pool),
+		"BILYON_NATS_URL":         ns.URL,
+		"BILYON_HTTP_ADDR":        "127.0.0.1:0",
+		"BILYON_MIGRATE_ON_START": "true",
+		"BILYON_LOG_FORMAT":       "text",
+		"BILYON_GRPC_ADDR":        "127.0.0.1:0",
+		"BILYON_GRPC_TLS_CERT":    server.CertFile,
+		"BILYON_GRPC_TLS_KEY":     server.KeyFile,
+		"BILYON_GRPC_TLS_CA":      server.CAFile,
+		"BILYON_GRPC_ACL":         "spiffe://bilyon/gateway=*",
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	grpcAddr := make(chan string, 1)
+	exit := make(chan int, 1)
+	var logs syncBuffer
+	go func() {
+		exit <- ledgerd.Main(ctx, []string{"run"}, config.FromMap(env), io.Discard, &logs,
+			ledgerd.Hooks{OnGRPCListening: func(a string) { grpcAddr <- a }})
+	}()
+	var addr string
+	select {
+	case addr = <-grpcAddr:
+	case code := <-exit:
+		t.Fatalf("ledgerd exited early with %d:\n%s", code, logs.String())
+	case <-time.After(30 * time.Second):
+		t.Fatal("ledgerd did not start")
+	}
+	creds, err := grpcx.ClientTLS(ca.Leaf("gateway", "spiffe://bilyon/gateway", "gateway"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds), grpc.WithDefaultServiceConfig(grpcx.RetryServiceConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	hc, err := healthpb.NewHealthClient(conn).Check(bg(t), &healthpb.HealthCheckRequest{Service: "bilyon.ledger.v1.LedgerService"})
+	if err != nil || hc.GetStatus() != healthpb.HealthCheckResponse_SERVING {
+		t.Fatalf("health: %v %v", hc, err)
+	}
+	client := ledgerapi.NewClient(conn)
+	bank, err := client.CreateAccount(bg(t), ledger.CreateAccount{IdempotencyKey: "bank", Kind: ledger.KindNostro, Currency: "EUR"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice, err := client.CreateAccount(bg(t), ledger.CreateAccount{IdempotencyKey: "alice", Kind: ledger.KindUser, Currency: "EUR"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Transfer(bg(t), ledger.Transfer{IdempotencyKey: "dep", Kind: "deposit",
+		Postings: []ledger.Posting{{AccountID: bank.ID, Amount: -700}, {AccountID: alice.ID, Amount: 700}}}); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := client.Balance(bg(t), alice.ID); err != nil || b.Posted != 700 {
+		t.Fatalf("balance over gRPC: %+v %v", b, err)
+	}
+	cancel()
+	select {
+	case code := <-exit:
+		if code != 0 {
+			t.Fatalf("exit %d:\n%s", code, logs.String())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("ledgerd did not shut down")
+	}
+}
+
+func TestGRPCConfigurationRequiresTLSUnlessInsecure(t *testing.T) {
+	base := map[string]string{"BILYON_DATABASE_URL": "postgres://x", "BILYON_NATS_URL": "nats://x", "BILYON_GRPC_ADDR": ":0"}
+	_, err := ledgerd.LoadConfig(config.FromMap(base), true)
+	for _, want := range []string{"BILYON_GRPC_TLS_CERT", "BILYON_GRPC_TLS_KEY", "BILYON_GRPC_TLS_CA", "BILYON_GRPC_ACL"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("missing %s not reported: %v", want, err)
+		}
+	}
+	base["BILYON_GRPC_INSECURE"] = "true"
+	if _, err := ledgerd.LoadConfig(config.FromMap(base), true); err != nil {
+		t.Fatalf("insecure mode: %v", err)
+	}
+	delete(base, "BILYON_GRPC_INSECURE")
+	base["BILYON_GRPC_TLS_CERT"], base["BILYON_GRPC_TLS_KEY"], base["BILYON_GRPC_TLS_CA"] = "c", "k", "ca"
+	base["BILYON_GRPC_ACL"] = "broken"
+	if _, err := ledgerd.LoadConfig(config.FromMap(base), true); err == nil || !strings.Contains(err.Error(), "BILYON_GRPC_ACL") {
+		t.Fatalf("malformed ACL: %v", err)
 	}
 }

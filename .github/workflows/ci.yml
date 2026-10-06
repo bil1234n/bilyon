@@ -60,6 +60,13 @@ jobs:
           "$RUNNER_TEMP/tigerbeetle/tigerbeetle" version
           echo "BILYON_TIGERBEETLE_BIN=$RUNNER_TEMP/tigerbeetle/tigerbeetle" >> "$GITHUB_ENV"
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Generated code is current
+        run: make proto-tools proto-check
+
       - name: Lint
         run: make lint
 

@@ -1,0 +1,252 @@
+// Ledger command API (RFC 0001 §1.2 TB5): services move money only through
+// these idempotent commands, over mTLS with per-command authorisation. The
+// ledger enforces its invariants itself; this API adds no business rules.
+//
+// Conventions:
+//   - Ids are canonical UUID strings; amounts are int64 minor units.
+//   - Every mutating request carries an idempotency_key (1..255 printable
+//     ASCII). Replaying a request with the same key and payload returns the
+//     original result; the same key with another payload fails with
+//     ALREADY_EXISTS / reason IDEMPOTENCY_CONFLICT.
+//   - Failures carry a google.rpc.ErrorInfo with domain "ledger.bilyon" and
+//     a reason (INSUFFICIENT_FUNDS, ACCOUNT_FROZEN, HOLD_NOT_PENDING, ...).
+syntax = "proto3";
+
+package bilyon.ledger.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/bil1234n/bilyon/backend/gen/bilyon/ledger/v1;ledgerv1";
+
+service LedgerService {
+  rpc CreateAccount(CreateAccountRequest) returns (Account);
+  rpc SetFrozen(SetFrozenRequest) returns (Account);
+  rpc GetAccount(GetAccountRequest) returns (Account);
+  rpc GetBalance(GetBalanceRequest) returns (Balance);
+
+  rpc Transfer(TransferRequest) returns (Entry);
+  rpc Reverse(ReverseRequest) returns (Entry);
+  rpc GetEntry(GetEntryRequest) returns (Entry);
+  rpc ListHistory(ListHistoryRequest) returns (HistoryPage);
+
+  rpc PlaceHold(PlaceHoldRequest) returns (Hold);
+  rpc PostHold(PostHoldRequest) returns (PostHoldResponse);
+  rpc VoidHold(VoidHoldRequest) returns (Hold);
+  rpc GetHold(GetHoldRequest) returns (Hold);
+  rpc ExpireHolds(ExpireHoldsRequest) returns (ExpireHoldsResponse);
+
+  rpc OpenReserve(OpenReserveRequest) returns (OpenReserveResponse);
+  rpc ReleaseReserve(ReleaseReserveRequest) returns (ReleaseReserveResponse);
+  rpc GetReserve(GetReserveRequest) returns (Reserve);
+}
+
+message Account {
+  string id = 1;
+  string owner_id = 2;   // empty when the account has no owner
+  string kind = 3;       // user, merchant, offline_reserve, ...
+  string currency = 4;   // ISO 4217 alpha-3 (or USDC/EURC)
+  optional int64 floor = 5; // lowest available balance; absent = unbounded
+  int32 stripes = 6;
+  bool frozen = 7;
+  string label = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message Balance {
+  string account_id = 1;
+  string currency = 2;
+  int64 posted = 3;
+  int64 pending = 4;
+  int64 available = 5;
+  optional int64 floor = 6;
+  bool frozen = 7;
+}
+
+message Posting {
+  string account_id = 1;
+  int64 amount = 2; // signed balance delta
+}
+
+message PostingRecord {
+  int32 seq = 1;
+  string account_id = 2;
+  int32 stripe = 3;
+  string currency = 4;
+  int64 amount = 5;
+}
+
+message Entry {
+  string id = 1;
+  string idempotency_key = 2;
+  string kind = 3;
+  string ref_type = 4;
+  string ref_id = 5;
+  string memo = 6;
+  string reverses = 7; // empty unless this entry reverses another
+  string hold_id = 8;  // empty unless this entry settles a hold
+  google.protobuf.Timestamp created_at = 9;
+  repeated PostingRecord postings = 10;
+}
+
+message Hold {
+  string id = 1;
+  string idempotency_key = 2;
+  string account_id = 3;
+  string currency = 4;
+  int64 amount = 5;
+  string reason = 6;
+  string state = 7; // pending, posted, voided, expired
+  google.protobuf.Timestamp expires_at = 8;
+  int64 posted_amount = 9;
+  string entry_id = 10;
+  string ref_type = 11;
+  string ref_id = 12;
+  string resolution_note = 13;
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp resolved_at = 15;
+}
+
+message Reserve {
+  string id = 1;
+  string funding_account_id = 2;
+  string currency = 3;
+  string purpose = 4;
+  string ref_type = 5;
+  string ref_id = 6;
+  string state = 7; // open, closed
+  string opened_entry_id = 8;
+  string closed_entry_id = 9;
+  google.protobuf.Timestamp expires_at = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp closed_at = 12;
+}
+
+message CreateAccountRequest {
+  string idempotency_key = 1;
+  string account_id = 2; // optional; derived from the key when empty
+  string owner_id = 3;
+  string kind = 4;
+  string currency = 5;
+  optional int64 floor = 6;
+  int32 stripes = 7;
+  string label = 8;
+}
+
+message SetFrozenRequest {
+  string idempotency_key = 1;
+  string account_id = 2;
+  bool frozen = 3;
+  string reason = 4;
+}
+
+message GetAccountRequest {
+  string account_id = 1;
+}
+
+message GetBalanceRequest {
+  string account_id = 1;
+}
+
+message TransferRequest {
+  string idempotency_key = 1;
+  string kind = 2;
+  string ref_type = 3;
+  string ref_id = 4;
+  string memo = 5;
+  repeated Posting postings = 6;
+}
+
+message ReverseRequest {
+  string idempotency_key = 1;
+  string entry_id = 2;
+  string memo = 3;
+}
+
+message GetEntryRequest {
+  string entry_id = 1;
+}
+
+message ListHistoryRequest {
+  string account_id = 1;
+  string before = 2; // cursor: entries strictly older than this entry
+  int32 limit = 3;   // 1..500, default 50
+}
+
+message HistoryPage {
+  repeated Entry entries = 1;
+  string next = 2; // empty at the end
+}
+
+message PlaceHoldRequest {
+  string idempotency_key = 1;
+  string account_id = 2;
+  int64 amount = 3;
+  string reason = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  string ref_type = 6;
+  string ref_id = 7;
+}
+
+message PostHoldRequest {
+  string idempotency_key = 1;
+  string hold_id = 2;
+  string kind = 3;
+  string memo = 4;
+  repeated Posting credits = 5;
+}
+
+message PostHoldResponse {
+  Hold hold = 1;
+  Entry entry = 2;
+}
+
+message VoidHoldRequest {
+  string idempotency_key = 1;
+  string hold_id = 2;
+  string reason = 3;
+}
+
+message GetHoldRequest {
+  string hold_id = 1;
+}
+
+message ExpireHoldsRequest {
+  int32 limit = 1;
+}
+
+message ExpireHoldsResponse {
+  repeated Hold holds = 1;
+}
+
+message OpenReserveRequest {
+  string idempotency_key = 1;
+  string reserve_id = 2; // optional; generated when empty
+  string kind = 3;       // escrow account kind; default offline_reserve
+  string funding_account_id = 4;
+  int64 amount = 5;
+  string purpose = 6;
+  string ref_type = 7;
+  string ref_id = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  string memo = 10;
+}
+
+message OpenReserveResponse {
+  Reserve reserve = 1;
+  Entry entry = 2;
+}
+
+message ReleaseReserveRequest {
+  string idempotency_key = 1;
+  string reserve_id = 2;
+  string memo = 3;
+}
+
+message ReleaseReserveResponse {
+  Reserve reserve = 1;
+  Entry entry = 2; // absent when nothing was left to release
+}
+
+message GetReserveRequest {
+  string reserve_id = 1;
+}

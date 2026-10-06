@@ -14,6 +14,12 @@ GO_PACKAGES := ./backend/... ./reference/...
 COMPOSE := docker compose -f deploy/docker-compose.yml
 TEST_TIMEOUT ?= 15m
 
+# Pinned protobuf toolchain (make proto-tools installs it into .tools).
+TOOLS := $(CURDIR)/.tools
+GRPC_TOOLS_VERSION := 1.76.0
+PROTOC_GEN_GO_VERSION := v1.36.12
+PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -65,6 +71,26 @@ down: ## Stop the local stack (volumes are kept)
 .PHONY: migrate
 migrate: ## Apply ledger migrations to BILYON_DATABASE_URL
 	cd backend && $(GO) run ./cmd/ledgerd migrate
+
+.PHONY: proto-tools
+proto-tools: ## Install the pinned protobuf toolchain into .tools
+	python3 -m venv $(TOOLS)/venv
+	$(TOOLS)/venv/bin/pip install -q grpcio-tools==$(GRPC_TOOLS_VERSION)
+	GOBIN=$(TOOLS)/bin $(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	GOBIN=$(TOOLS)/bin $(GO) install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
+
+.PHONY: proto
+proto: ## Regenerate backend/gen from backend/proto (run make proto-tools first)
+	cd backend && rm -rf gen && mkdir gen && \
+	PATH="$(TOOLS)/bin:$$PATH" $(TOOLS)/venv/bin/python -I -m grpc_tools.protoc -I proto \
+		--go_out=gen --go_opt=paths=source_relative \
+		--go-grpc_out=gen --go-grpc_opt=paths=source_relative \
+		$$(find proto -name '*.proto' | sort)
+
+.PHONY: proto-check
+proto-check: proto ## Fail when backend/gen is stale
+	@changes="$$(git status --porcelain -- backend/gen)"; \
+	if [[ -n "$$changes" ]]; then echo "generated code is stale; run make proto:"; echo "$$changes"; exit 1; fi
 
 .PHONY: ci
 ci: lint test-race ## What CI runs
