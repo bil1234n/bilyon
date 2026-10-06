@@ -3,9 +3,7 @@ package webauthn
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +13,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/bil1234n/bilyon/backend/internal/outbox"
+	"github.com/bil1234n/bilyon/backend/internal/platform/onetime"
 )
 
 // Store errors.
@@ -227,46 +226,26 @@ type ChallengeStore interface {
 	Take(ctx context.Context, flowID string) (ceremony, error)
 }
 
-// RedisChallenges stores ceremonies in Redis with GETDEL for atomic,
-// single-use retrieval.
+// RedisChallenges stores ceremonies in Redis, single use.
 type RedisChallenges struct {
-	rdb    redis.UniversalClient
-	prefix string
+	s *onetime.Store[ceremony]
 }
 
 // NewRedisChallenges returns a Redis-backed ChallengeStore.
 func NewRedisChallenges(rdb redis.UniversalClient) *RedisChallenges {
-	return &RedisChallenges{rdb: rdb, prefix: "bilyon:webauthn:flow:"}
+	return &RedisChallenges{s: onetime.New[ceremony](rdb, "bilyon:webauthn:flow:")}
 }
 
 // Put implements ChallengeStore.
 func (r *RedisChallenges) Put(ctx context.Context, flowID string, c ceremony, ttl time.Duration) error {
-	raw, err := json.Marshal(c)
-	if err != nil {
-		return err
-	}
-	ok, err := r.rdb.SetNX(ctx, r.prefix+flowID, raw, ttl).Result()
-	if err != nil {
-		return fmt.Errorf("webauthn: store challenge: %w", err)
-	}
-	if !ok {
-		return errors.New("webauthn: flow id collision")
-	}
-	return nil
+	return r.s.Put(ctx, flowID, c, ttl)
 }
 
 // Take implements ChallengeStore.
 func (r *RedisChallenges) Take(ctx context.Context, flowID string) (ceremony, error) {
-	raw, err := r.rdb.GetDel(ctx, r.prefix+flowID).Bytes()
-	if errors.Is(err, redis.Nil) {
+	c, err := r.s.Take(ctx, flowID)
+	if errors.Is(err, onetime.ErrNotFound) {
 		return ceremony{}, ErrNotFound
 	}
-	if err != nil {
-		return ceremony{}, fmt.Errorf("webauthn: load challenge: %w", err)
-	}
-	var c ceremony
-	if err := json.Unmarshal(raw, &c); err != nil {
-		return ceremony{}, fmt.Errorf("webauthn: corrupt ceremony: %w", err)
-	}
-	return c, nil
+	return c, err
 }
